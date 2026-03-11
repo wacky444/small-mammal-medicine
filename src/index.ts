@@ -326,10 +326,12 @@ async function tick() {
     const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
     const lastSentAt = reminder?.last_sent_at ? dayjs(reminder.last_sent_at) : null;
     const sentCount = reminder?.sent_count ?? 0;
-    const maxSends = 1 + reminders.repeatCount;
+    const allowRepeats = !dose.period;
+    const maxSends = allowRepeats ? 1 + reminders.repeatCount : 1;
 
     const shouldSendInitial = sentCount === 0 && now.isAfter(base);
     const shouldSendRepeat =
+      allowRepeats &&
       sentCount > 0 &&
       sentCount < maxSends &&
       lastSentAt &&
