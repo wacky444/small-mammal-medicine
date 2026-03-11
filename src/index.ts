@@ -443,13 +443,23 @@ async function buildStatusText(now: dayjs.Dayjs) {
 }
 
 async function refreshLastStatusMessage(chatId: string, now: dayjs.Dayjs) {
+  const text = await buildStatusText(now);
   const row = await getLastStatusMessage(chatId);
-  if (!row?.last_status_message_id) return;
+
+  if (row?.last_status_message_id) {
+    try {
+      await bot.telegram.editMessageText(chatId, Number(row.last_status_message_id), undefined, text);
+      return;
+    } catch (err) {
+      console.error("Failed to refresh status message", err);
+    }
+  }
+
   try {
-    const text = await buildStatusText(now);
-    await bot.telegram.editMessageText(chatId, Number(row.last_status_message_id), undefined, text);
+    const msg = await bot.telegram.sendMessage(chatId, text, MAIN_KEYBOARD);
+    await setLastStatusMessage(chatId, msg.message_id.toString());
   } catch (err) {
-    console.error("Failed to refresh status message", err);
+    console.error("Failed to send fallback status message", err);
   }
 }
 
@@ -515,6 +525,7 @@ bot.action(/give:(.+):(.+)/, async (ctx) => {
   }
 
   await ctx.answerCbQuery("Marked ✅");
+  await safeReply(ctx, `✅ ${dose.label} (${getDoseDisplayTime(dose)}) marcado`, MAIN_KEYBOARD);
 });
 
 const BOT_COMMANDS = [
