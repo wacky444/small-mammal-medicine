@@ -90,6 +90,7 @@ function isAdmin(userId?: number) {
 function getDefaultPeriodReminderTime(period: string) {
   if (period === "morning") return "08:00";
   if (period === "afternoon") return "17:00";
+  if (period === "evening") return "21:00";
   return "09:00";
 }
 
@@ -113,6 +114,12 @@ function getDoseWindow(dose: any, now: dayjs.Dayjs) {
       return { start, end, base };
     }
 
+    if (dose.period === "evening") {
+      const start = day.hour(18).minute(0).second(0).millisecond(0);
+      const end = day.hour(23).minute(59).second(59).millisecond(999);
+      return { start, end, base };
+    }
+
     const start = day.hour(6).minute(0).second(0).millisecond(0);
     const end = day.hour(23).minute(59).second(59).millisecond(999);
     return { start, end, base };
@@ -132,6 +139,7 @@ function getDoseWindow(dose: any, now: dayjs.Dayjs) {
 function getDoseDisplayTime(dose: any) {
   if (dose.period === "morning") return "Mañana";
   if (dose.period === "afternoon") return "Tarde";
+  if (dose.period === "evening") return "Noche";
   if (dose.period === "day") return "Día";
   return dose.time;
 }
@@ -140,6 +148,7 @@ function getDoseSortKey(dose: any) {
   if (dose.period === "morning") return "06:00";
   if (dose.period === "day") return "12:00";
   if (dose.period === "afternoon") return "14:01";
+  if (dose.period === "evening") return "18:00";
   return dose.time;
 }
 
@@ -319,6 +328,16 @@ async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
   }
 
   for (const group of Object.values(bySlot)) {
+    let hasActiveMessage = false;
+    for (const dose of group) {
+      const occId = occurrenceId(dose, dateStr);
+      const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
+      if (reminder?.message_id && reminder?.chat_id === chatId) {
+        hasActiveMessage = true;
+        break;
+      }
+    }
+    if (hasActiveMessage) continue;
     await sendDoseMessage(chatId, group, dateStr);
   }
 
