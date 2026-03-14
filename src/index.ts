@@ -77,10 +77,6 @@ await db.exec(`
     message_id TEXT,
     chat_id TEXT
   );
-  CREATE TABLE IF NOT EXISTS chat_state (
-    chat_id TEXT PRIMARY KEY,
-    last_status_message_id TEXT
-  );
 `);
 
 function isAdmin(userId?: number) {
@@ -225,20 +221,6 @@ async function updateReminder(occId: string, patch: any) {
   );
 }
 
-async function setLastStatusMessage(chatId: string, messageId: string) {
-  await db.run(
-    `INSERT INTO chat_state (chat_id, last_status_message_id)
-     VALUES (?, ?)
-     ON CONFLICT(chat_id) DO UPDATE SET last_status_message_id = excluded.last_status_message_id`,
-    chatId,
-    messageId
-  );
-}
-
-async function getLastStatusMessage(chatId: string) {
-  return db.get("SELECT last_status_message_id FROM chat_state WHERE chat_id = ?", chatId);
-}
-
 async function maybeClearButtons(now: dayjs.Dayjs) {
   const rows = await db.all("SELECT * FROM reminders WHERE message_id IS NOT NULL");
   for (const row of rows) {
@@ -328,17 +310,31 @@ async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
   }
 
   for (const group of Object.values(bySlot)) {
-    let hasActiveMessage = false;
+    const existingRows = [];
     for (const dose of group) {
       const occId = occurrenceId(dose, dateStr);
       const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
-      if (reminder?.message_id && reminder?.chat_id === chatId) {
-        hasActiveMessage = true;
-        break;
-      }
+      if (reminder) existingRows.push(reminder);
     }
+
+    const hasActiveMessage = existingRows.some((row: any) => row?.message_id && row?.chat_id === chatId);
     if (hasActiveMessage) continue;
-    await sendDoseMessage(chatId, group, dateStr);
+
+    const messageId = await sendDoseMessage(chatId, group, dateStr);
+    if (!messageId) continue;
+
+    for (const dose of group) {
+      const occId = occurrenceId(dose, dateStr);
+      const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
+      await updateReminder(occId, {
+        dose_id: dose.id,
+        date: dateStr,
+        sent_count: reminder?.sent_count ?? 0,
+        last_sent_at: reminder?.last_sent_at ?? null,
+        message_id: messageId.toString(),
+        chat_id: chatId
+      });
+    }
   }
 
   return null;
@@ -390,7 +386,20 @@ async function tick() {
   }
 
   for (const [, group] of Object.entries(byTime)) {
+    let hasActiveMessage = false;
+    for (const dose of group) {
+      const occId = occurrenceId(dose, dateStr);
+      const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
+      if (reminder?.message_id && reminder?.chat_id === targetChatId) {
+        hasActiveMessage = true;
+        break;
+      }
+    }
+    if (hasActiveMessage) continue;
+
     const messageId = await sendReminder(group, dateStr);
+    if (!messageId) continue;
+
     for (const dose of group) {
       const occId = occurrenceId(dose, dateStr);
       const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
@@ -400,7 +409,7 @@ async function tick() {
         date: dateStr,
         sent_count: sentCount,
         last_sent_at: now.toISOString(),
-        message_id: messageId?.toString() ?? reminder?.message_id ?? null,
+        message_id: messageId.toString(),
         chat_id: targetChatId
       });
     }
@@ -461,39 +470,10 @@ async function buildStatusText(now: dayjs.Dayjs) {
   return lines.length ? lines.join("\n") : "No doses scheduled today.";
 }
 
-async function refreshLastStatusMessage(chatId: string, now: dayjs.Dayjs) {
-  const text = await buildStatusText(now);
-  const row = await getLastStatusMessage(chatId);
-
-  if (row?.last_status_message_id) {
-    try {
-      await bot.telegram.editMessageText(chatId, Number(row.last_status_message_id), undefined, text);
-      return;
-    } catch (err) {
-      console.error("Failed to refresh status message", err);
-    }
-  }
-
-  try {
-    const msg = await bot.telegram.sendMessage(chatId, text, MAIN_KEYBOARD);
-    await setLastStatusMessage(chatId, msg.message_id.toString());
-  } catch (err) {
-    console.error("Failed to send fallback status message", err);
-  }
-}
-
 async function handleStatus(ctx: any) {
   const now = dayjs().tz(tz);
   const text = await buildStatusText(now);
-  const reply = await safeReply(ctx, text, MAIN_KEYBOARD);
-
-  const chatId = ctx.chat?.id?.toString();
-  if (chatId && reply?.message_id) {
-    await setLastStatusMessage(chatId, reply.message_id.toString());
-  }
-  if (chatId) {
-    await sendDueButtonsToChat(chatId, now);
-  }
+  await safeReply(ctx, text, MAIN_KEYBOARD);
 }
 
 async function handleDue(ctx: any) {
@@ -538,13 +518,7 @@ bot.action(/give:(.+):(.+)/, async (ctx) => {
     console.error("Failed to update reminder buttons", err);
   }
 
-  const chatId = ctx.chat?.id?.toString();
-  if (chatId) {
-    await refreshLastStatusMessage(chatId, dayjs().tz(tz));
-  }
-
   await ctx.answerCbQuery("Marked ✅");
-  await safeReply(ctx, `✅ ${dose.label} (${getDoseDisplayTime(dose)}) marcado`, MAIN_KEYBOARD);
 });
 
 const BOT_COMMANDS = [
