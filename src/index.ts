@@ -33,15 +33,32 @@ if (!botToken) {
 }
 
 const bot = new Telegraf(botToken);
+let telegramBackoffUntil = 0;
+
+function noteTelegramBackoff(err: any) {
+  const retryAfter = err?.response?.parameters?.retry_after;
+  if (!retryAfter) return false;
+  const until = Date.now() + (Number(retryAfter) * 1000);
+  telegramBackoffUntil = Math.max(telegramBackoffUntil, until);
+  console.warn(`Telegram rate limited; backing off for ${retryAfter}s`);
+  return true;
+}
+
+function isTelegramBackedOff() {
+  return Date.now() < telegramBackoffUntil;
+}
 
 bot.catch((err, ctx) => {
+  noteTelegramBackoff(err);
   console.error(`Bot error for update ${ctx.updateType}`, err);
 });
 
 async function safeReply(ctx: any, text: string, extra?: any) {
+  if (isTelegramBackedOff()) return null;
   try {
     return await ctx.reply(text, extra);
   } catch (err) {
+    noteTelegramBackoff(err);
     console.error("Reply failed", err);
     try {
       console.error(JSON.stringify(err));
@@ -341,6 +358,7 @@ async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
 }
 
 async function tick() {
+  if (isTelegramBackedOff()) return;
   const now = dayjs().tz(tz);
   const dateStr = now.format("YYYY-MM-DD");
 
@@ -513,12 +531,22 @@ bot.action(/give:(.+):(.+)/, async (ctx) => {
       .map((row: any[]) => row.filter((button: any) => button.callback_data !== `give:${doseId}:${dateStr}`))
       .filter((row: any[]) => row.length > 0);
 
-    await ctx.editMessageReplyMarkup(filtered.length > 0 ? { inline_keyboard: filtered } : undefined);
+    if (!isTelegramBackedOff()) {
+      await ctx.editMessageReplyMarkup(filtered.length > 0 ? { inline_keyboard: filtered } : undefined);
+    }
   } catch (err) {
+    noteTelegramBackoff(err);
     console.error("Failed to update reminder buttons", err);
   }
 
-  await ctx.answerCbQuery("Marked ✅");
+  try {
+    if (!isTelegramBackedOff()) {
+      await ctx.answerCbQuery("Marked ✅");
+    }
+  } catch (err) {
+    noteTelegramBackoff(err);
+    console.error("Failed to answer callback query", err);
+  }
 });
 
 const BOT_COMMANDS = [
