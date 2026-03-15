@@ -34,6 +34,7 @@ if (!botToken) {
 
 const bot = new Telegraf(botToken);
 let telegramBackoffUntil = 0;
+const deferredSlotUntil = new Map<string, number>();
 
 function noteTelegramBackoff(err: any) {
   const retryAfter = err?.response?.parameters?.retry_after;
@@ -41,6 +42,28 @@ function noteTelegramBackoff(err: any) {
   const until = Date.now() + (Number(retryAfter) * 1000);
   telegramBackoffUntil = Math.max(telegramBackoffUntil, until);
   console.warn(`Telegram rate limited; backing off for ${retryAfter}s`);
+  return true;
+}
+
+function makeSlotKey(chatId: string, dateStr: string, doses: any[]) {
+  return `${chatId}|${dateStr}|${getDoseDisplayTime(doses[0])}`;
+}
+
+function noteDeferredSlot(slotKey: string, err: any) {
+  const retryAfter = err?.response?.parameters?.retry_after;
+  if (!retryAfter) return false;
+  const until = Date.now() + (Number(retryAfter) * 1000);
+  deferredSlotUntil.set(slotKey, until);
+  return true;
+}
+
+function isDeferredSlot(slotKey: string) {
+  const until = deferredSlotUntil.get(slotKey);
+  if (!until) return false;
+  if (Date.now() >= until) {
+    deferredSlotUntil.delete(slotKey);
+    return false;
+  }
   return true;
 }
 
@@ -327,6 +350,9 @@ async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
   }
 
   for (const group of Object.values(bySlot)) {
+    const slotKey = makeSlotKey(chatId, dateStr, group);
+    if (isDeferredSlot(slotKey)) continue;
+
     const existingRows = [];
     for (const dose of group) {
       const occId = occurrenceId(dose, dateStr);
