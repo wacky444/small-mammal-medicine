@@ -35,6 +35,11 @@ if (!botToken) {
 const bot = new Telegraf(botToken);
 let telegramBackoffUntil = 0;
 const deferredSlotUntil = new Map<string, number>();
+const chatQueues = new Map<string, Promise<any>>();
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function noteTelegramBackoff(err: any) {
   const retryAfter = err?.response?.parameters?.retry_after;
@@ -71,17 +76,53 @@ function isTelegramBackedOff() {
   return Date.now() < telegramBackoffUntil;
 }
 
+async function enqueueChatOp<T>(chatKey: string, op: () => Promise<T>, retryOn429 = true): Promise<T | null> {
+  const prev = chatQueues.get(chatKey) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  chatQueues.set(chatKey, prev.finally(() => gate));
+
+  await prev.catch(() => {});
+
+  try {
+    const waitMs = telegramBackoffUntil - Date.now();
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+
+    try {
+      return await op();
+    } catch (err: any) {
+      const hadBackoff = noteTelegramBackoff(err);
+      if (retryOn429 && hadBackoff) {
+        const retryWaitMs = telegramBackoffUntil - Date.now();
+        if (retryWaitMs > 0) {
+          await sleep(retryWaitMs);
+        }
+        return await op();
+      }
+      throw err;
+    }
+  } catch (err) {
+    throw err;
+  } finally {
+    release();
+    if (chatQueues.get(chatKey) === gate) {
+      chatQueues.delete(chatKey);
+    }
+  }
+}
+
 bot.catch((err, ctx) => {
   noteTelegramBackoff(err);
   console.error(`Bot error for update ${ctx.updateType}`, err);
 });
 
 async function safeReply(ctx: any, text: string, extra?: any) {
-  if (isTelegramBackedOff()) return null;
+  const chatKey = ctx.chat?.id?.toString?.() ?? "global";
   try {
-    return await ctx.reply(text, extra);
+    return await enqueueChatOp(chatKey, () => ctx.reply(text, extra));
   } catch (err) {
-    noteTelegramBackoff(err);
     console.error("Reply failed", err);
     try {
       console.error(JSON.stringify(err));
@@ -339,7 +380,7 @@ async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
   const dueDoses = await getDueDoses(now);
 
   if (dueDoses.length === 0) {
-    return bot.telegram.sendMessage(chatId, "No hay medicinas pendientes en este momento.", MAIN_KEYBOARD);
+    return enqueueChatOp(chatId, () => bot.telegram.sendMessage(chatId, "No hay medicinas pendientes en este momento.", MAIN_KEYBOARD));
   }
 
   const bySlot: Record<string, any[]> = {};
@@ -557,20 +598,15 @@ bot.action(/give:(.+):(.+)/, async (ctx) => {
       .map((row: any[]) => row.filter((button: any) => button.callback_data !== `give:${doseId}:${dateStr}`))
       .filter((row: any[]) => row.length > 0);
 
-    if (!isTelegramBackedOff()) {
-      await ctx.editMessageReplyMarkup(filtered.length > 0 ? { inline_keyboard: filtered } : undefined);
-    }
+    const chatKey = ctx.chat?.id?.toString?.() ?? "callback";
+    await enqueueChatOp(chatKey, () => ctx.editMessageReplyMarkup(filtered.length > 0 ? { inline_keyboard: filtered } : undefined));
   } catch (err) {
-    noteTelegramBackoff(err);
     console.error("Failed to update reminder buttons", err);
   }
 
   try {
-    if (!isTelegramBackedOff()) {
-      await ctx.answerCbQuery("Marked ✅");
-    }
+    await enqueueChatOp("callback", () => ctx.answerCbQuery("Marked ✅"), false);
   } catch (err) {
-    noteTelegramBackoff(err);
     console.error("Failed to answer callback query", err);
   }
 });
