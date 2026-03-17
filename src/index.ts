@@ -338,7 +338,7 @@ function buildButtons(doses: any[], dateStr: string) {
 async function sendDoseMessage(chatId: string, doses: any[], dateStr: string) {
   const time = getDoseDisplayTime(doses[0]);
   const labels = doses.map((d: any) => `• ${d.label}`).join("\n");
-  const text = `🕒 Medicación (${time})\n${labels}\n\nPulsa para marcar como dada.`;
+  const text = `🕒 Medicación (${time})\n${labels}`;
   try {
     const msg = await bot.telegram.sendMessage(
       chatId,
@@ -416,7 +416,8 @@ async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
         sent_count: reminder?.sent_count ?? 0,
         last_sent_at: reminder?.last_sent_at ?? null,
         message_id: messageId.toString(),
-        chat_id: chatId
+        chat_id: chatId,
+        source: "manual"
       });
     }
   }
