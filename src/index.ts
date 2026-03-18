@@ -158,6 +158,15 @@ await db.exec(`
     message_id TEXT,
     chat_id TEXT
   );
+  CREATE TABLE IF NOT EXISTS reminder_debug (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    occurrence_id TEXT,
+    dose_id TEXT,
+    slot TEXT,
+    details TEXT
+  );
 `);
 
 function isAdmin(userId?: number) {
@@ -244,6 +253,23 @@ function occurrenceId(dose: any, dateStr: string) {
   return `${dose.id}:${dateStr}`;
 }
 
+async function debugLog(stage: string, opts: { occurrence_id?: string; dose_id?: string; slot?: string; details?: any } = {}) {
+  try {
+    await db.run(
+      `INSERT INTO reminder_debug (ts, stage, occurrence_id, dose_id, slot, details)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      dayjs().toISOString(),
+      stage,
+      opts.occurrence_id ?? null,
+      opts.dose_id ?? null,
+      opts.slot ?? null,
+      opts.details ? JSON.stringify(opts.details) : null
+    );
+  } catch {
+    // ignore debug logging failures
+  }
+}
+
 async function doseGiven(occId: string) {
   const row = await db.get(
     "SELECT 1 FROM doses_given WHERE occurrence_id = ? LIMIT 1",
@@ -285,6 +311,7 @@ async function updateReminder(occId: string, patch: any) {
       patch.message_id ?? null,
       patch.chat_id ?? null
     );
+    await debugLog("updateReminder.inserted", { occurrence_id: occId, dose_id: patch?.dose_id, details: { message_id: patch?.message_id, sent_count: patch?.sent_count, source: patch?.source } });
     return;
   }
   await db.run(
@@ -440,6 +467,7 @@ async function tick() {
     if (now.isBefore(start) || now.isAfter(end)) continue;
 
     const occId = occurrenceId(dose, dateStr);
+    const slot = getDoseDisplayTime(dose);
     if (await doseGiven(occId)) continue;
 
     const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
@@ -456,8 +484,16 @@ async function tick() {
       lastSentAt &&
       now.diff(lastSentAt, "minute") >= reminders.repeatEveryMinutes;
 
+    await debugLog("dose.evaluated", {
+      occurrence_id: occId,
+      dose_id: dose.id,
+      slot,
+      details: { sentCount, shouldSendInitial, shouldSendRepeat, base: base.toISOString(), now: now.toISOString() }
+    });
+
     if (shouldSendInitial || shouldSendRepeat) {
       dueDoses.push(dose);
+      await debugLog("dose.marked_due", { occurrence_id: occId, dose_id: dose.id, slot });
     }
   }
 
@@ -486,6 +522,7 @@ async function tick() {
     const messageId = await sendReminder(group, dateStr);
     if (!messageId) continue;
 
+    const slot = getDoseDisplayTime(group[0]);
     for (const dose of group) {
       const occId = occurrenceId(dose, dateStr);
       const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
@@ -498,6 +535,7 @@ async function tick() {
         message_id: messageId.toString(),
         chat_id: targetChatId
       });
+      await debugLog("slot.reminder_row.updated", { occurrence_id: occId, dose_id: dose.id, slot, details: { sentCount, messageId } });
     }
   }
 }
