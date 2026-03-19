@@ -512,7 +512,11 @@ async function tick() {
     for (const dose of group) {
       const occId = occurrenceId(dose, dateStr);
       const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
-      if (reminder?.message_id && reminder?.chat_id === targetChatId) {
+      if (
+        reminder?.message_id &&
+        reminder?.chat_id === targetChatId &&
+        ((reminder?.sent_count ?? 0) > 0 || !!reminder?.last_sent_at)
+      ) {
         hasActiveMessage = true;
         break;
       }
