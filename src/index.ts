@@ -37,6 +37,22 @@ let telegramBackoffUntil = 0;
 const deferredSlotUntil = new Map<string, number>();
 const chatQueues = new Map<string, Promise<any>>();
 
+const TELEGRAM_GROUP_MESSAGES_PER_MIN = 20;
+const TELEGRAM_SEND_INTERVAL_MS = Math.ceil(60000 / TELEGRAM_GROUP_MESSAGES_PER_MIN);
+
+type ReminderJob = {
+  slotKey: string;
+  chatId: string;
+  dateStr: string;
+  doses: any[];
+  source: "scheduled" | "manual";
+};
+
+const reminderQueue: ReminderJob[] = [];
+const queuedSlotKeys = new Set<string>();
+let processingReminderQueue = false;
+let nextReminderSendAt = 0;
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -362,26 +378,72 @@ function buildButtons(doses: any[], dateStr: string) {
   return Markup.inlineKeyboard(buttons, { columns: 1 });
 }
 
-async function sendDoseMessage(chatId: string, doses: any[], dateStr: string) {
+async function sendDoseMessageNow(chatId: string, doses: any[], dateStr: string) {
   const time = getDoseDisplayTime(doses[0]);
   const labels = doses.map((d: any) => `• ${d.label}`).join("\n");
   const text = `🕒 Medicación (${time})\n${labels}`;
-  try {
-    const msg = await bot.telegram.sendMessage(
-      chatId,
-      text,
-      buildButtons(doses, dateStr)
-    );
-    return msg.message_id;
-  } catch (err) {
-    console.error("Send reminder failed", err);
-    return null;
-  }
+  const msg = await bot.telegram.sendMessage(
+    chatId,
+    text,
+    buildButtons(doses, dateStr)
+  );
+  return msg.message_id;
 }
 
-async function sendReminder(doses: any[], dateStr: string) {
-  if (!targetChatId) return;
-  return sendDoseMessage(targetChatId, doses, dateStr);
+function enqueueReminderJob(chatId: string, doses: any[], dateStr: string, source: "scheduled" | "manual") {
+  const slotKey = makeSlotKey(chatId, dateStr, doses);
+  if (isDeferredSlot(slotKey) || queuedSlotKeys.has(slotKey)) return false;
+  reminderQueue.push({ slotKey, chatId, dateStr, doses, source });
+  queuedSlotKeys.add(slotKey);
+  return true;
+}
+
+async function processReminderQueue() {
+  if (processingReminderQueue) return;
+  if (reminderQueue.length === 0) return;
+  processingReminderQueue = true;
+  try {
+    const nowMs = Date.now();
+    if (nowMs < telegramBackoffUntil || nowMs < nextReminderSendAt) {
+      return;
+    }
+
+    const job = reminderQueue[0];
+    const { slotKey, chatId, dateStr, doses, source } = job;
+
+    try {
+      const messageId = await sendDoseMessageNow(chatId, doses, dateStr);
+      deferredSlotUntil.delete(slotKey);
+
+      for (const dose of doses) {
+        const occId = occurrenceId(dose, dateStr);
+        const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
+        const sentCount = source === "scheduled" ? (reminder?.sent_count ?? 0) + 1 : (reminder?.sent_count ?? 0);
+        const lastSentAt = source === "scheduled" ? dayjs().toISOString() : reminder?.last_sent_at ?? null;
+
+        await updateReminder(occId, {
+          dose_id: dose.id,
+          date: dateStr,
+          sent_count: sentCount,
+          last_sent_at: lastSentAt,
+          message_id: messageId.toString(),
+          chat_id: chatId
+        });
+      }
+
+      reminderQueue.shift();
+      queuedSlotKeys.delete(slotKey);
+      nextReminderSendAt = Date.now() + TELEGRAM_SEND_INTERVAL_MS;
+    } catch (err) {
+      noteTelegramBackoff(err);
+      noteDeferredSlot(slotKey, err);
+      console.error("Send reminder failed", err);
+      reminderQueue.shift();
+      queuedSlotKeys.delete(slotKey);
+    }
+  } finally {
+    processingReminderQueue = false;
+  }
 }
 
 async function getDueDoses(now: dayjs.Dayjs) {
@@ -431,22 +493,7 @@ async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
     const hasActiveMessage = existingRows.some((row: any) => row?.message_id && row?.chat_id === chatId);
     if (hasActiveMessage) continue;
 
-    const messageId = await sendDoseMessage(chatId, group, dateStr);
-    if (!messageId) continue;
-
-    for (const dose of group) {
-      const occId = occurrenceId(dose, dateStr);
-      const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
-      await updateReminder(occId, {
-        dose_id: dose.id,
-        date: dateStr,
-        sent_count: reminder?.sent_count ?? 0,
-        last_sent_at: reminder?.last_sent_at ?? null,
-        message_id: messageId.toString(),
-        chat_id: chatId,
-        source: "manual"
-      });
-    }
+    enqueueReminderJob(chatId, group, dateStr, "manual");
   }
 
   return null;
@@ -507,7 +554,7 @@ async function tick() {
     byTime[slot].push(dose);
   }
 
-  for (const [, group] of Object.entries(byTime)) {
+  for (const [slot, group] of Object.entries(byTime)) {
     let hasActiveMessage = false;
     for (const dose of group) {
       const occId = occurrenceId(dose, dateStr);
@@ -523,24 +570,8 @@ async function tick() {
     }
     if (hasActiveMessage) continue;
 
-    const messageId = await sendReminder(group, dateStr);
-    if (!messageId) continue;
-
-    const slot = getDoseDisplayTime(group[0]);
-    for (const dose of group) {
-      const occId = occurrenceId(dose, dateStr);
-      const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
-      const sentCount = (reminder?.sent_count ?? 0) + 1;
-      await updateReminder(occId, {
-        dose_id: dose.id,
-        date: dateStr,
-        sent_count: sentCount,
-        last_sent_at: now.toISOString(),
-        message_id: messageId.toString(),
-        chat_id: targetChatId
-      });
-      await debugLog("slot.reminder_row.updated", { occurrence_id: occId, dose_id: dose.id, slot, details: { sentCount, messageId } });
-    }
+    const enqueued = enqueueReminderJob(String(targetChatId), group, dateStr, "scheduled");
+    await debugLog("slot.enqueued", { slot, details: { enqueued, targetChatId } });
   }
 }
 
@@ -674,8 +705,13 @@ setInterval(() => {
   tick().catch((err) => console.error("tick error", err));
 }, 60_000);
 
+setInterval(() => {
+  processReminderQueue().catch((err) => console.error("queue error", err));
+}, 1000);
+
 // Run immediately on startup
 void tick();
+void processReminderQueue();
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
