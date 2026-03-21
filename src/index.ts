@@ -52,6 +52,7 @@ const reminderQueue: ReminderJob[] = [];
 const queuedSlotKeys = new Set<string>();
 let processingReminderQueue = false;
 let nextReminderSendAt = 0;
+let queueDay = dayjs().tz(tz).format("YYYY-MM-DD");
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -503,6 +504,15 @@ async function tick() {
   if (isTelegramBackedOff()) return;
   const now = dayjs().tz(tz);
   const dateStr = now.format("YYYY-MM-DD");
+
+  if (dateStr !== queueDay) {
+    reminderQueue.length = 0;
+    queuedSlotKeys.clear();
+    deferredSlotUntil.clear();
+    nextReminderSendAt = 0;
+    queueDay = dateStr;
+    await debugLog("queue.cleared.day_change", { details: { newDay: dateStr } });
+  }
 
   await maybeClearButtons(now);
 
