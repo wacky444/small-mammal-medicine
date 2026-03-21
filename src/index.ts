@@ -652,10 +652,30 @@ async function handleDue(ctx: any) {
   return sendDueButtonsToChat(chatId, now);
 }
 
+async function handleQueueStatus(ctx: any) {
+  if (!isAdmin(ctx.from?.id)) return safeReply(ctx, "Not allowed", MAIN_KEYBOARD);
+
+  const now = Date.now();
+  const nextMs = Math.max(0, nextReminderSendAt - now);
+  const backoffMs = Math.max(0, telegramBackoffUntil - now);
+  const text = [
+    `Queue size: ${reminderQueue.length}`,
+    `Queued slots: ${queuedSlotKeys.size}`,
+    `Deferred slots: ${deferredSlotUntil.size}`,
+    `Next send in: ${Math.ceil(nextMs / 1000)}s`,
+    `Global backoff: ${Math.ceil(backoffMs / 1000)}s`,
+    `Queue day: ${queueDay}`
+  ].join("\n");
+
+  return safeReply(ctx, text, MAIN_KEYBOARD);
+}
+
 bot.hears(/^\/status(?:@\w+)?$/i, handleStatus);
 bot.hears(/^\/due(?:@\w+)?$/i, handleDue);
+bot.hears(/^\/queue(?:@\w+)?$/i, handleQueueStatus);
 bot.hears(/^status$/i, handleStatus);
 bot.hears(/^pendientes$/i, handleDue);
+bot.hears(/^queue$/i, handleQueueStatus);
 
 bot.action(/give:(.+):(.+)/, async (ctx) => {
   const doseId = ctx.match[1];
@@ -698,6 +718,7 @@ bot.action(/give:(.+):(.+)/, async (ctx) => {
 const BOT_COMMANDS = [
   { command: "status", description: "Ver estado de medicación" },
   { command: "due", description: "Mostrar medicinas pendientes con botones" },
+  { command: "queue", description: "Ver cola y rate limit (admin)" },
   { command: "setchat", description: "Fijar este chat como destino (admin)" },
   { command: "ping", description: "Comprobar estado del bot" }
 ];
