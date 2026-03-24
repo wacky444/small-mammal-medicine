@@ -247,10 +247,16 @@ function getDoseSortKey(dose: any) {
 }
 
 function isDoseActiveToday(dose: any, now: dayjs.Dayjs) {
+  const today = now.tz(tz).startOf("day");
+
+  if (dose.endDate) {
+    const endDate = dayjs.tz(dose.endDate, tz).startOf("day");
+    if (today.isAfter(endDate)) return false;
+  }
+
   if (dose.schedule === "daily") return true;
   if (dose.schedule === "everyOtherDay") {
     const startDate = dayjs.tz(dose.startDate, tz).startOf("day");
-    const today = now.tz(tz).startOf("day");
     const diff = today.diff(startDate, "day");
     return diff >= 0 && diff % 2 === 0;
   }
