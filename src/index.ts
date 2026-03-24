@@ -34,7 +34,6 @@ if (!botToken) {
 
 const bot = new Telegraf(botToken);
 let telegramBackoffUntil = 0;
-const deferredSlotUntil = new Map<string, number>();
 const chatQueues = new Map<string, Promise<any>>();
 
 const TELEGRAM_GROUP_MESSAGES_PER_MIN = 20;
@@ -48,8 +47,18 @@ type ReminderJob = {
   source: "scheduled" | "manual";
 };
 
+type SlotStatus = "queued" | "deferred";
+type SlotState = {
+  status: SlotStatus;
+  job: ReminderJob;
+  deferredUntil?: number;
+  nextAttemptAt?: number;
+  deferredAt?: number;
+};
+
 const reminderQueue: ReminderJob[] = [];
-const queuedSlotKeys = new Set<string>();
+/** Single source of truth for per-slot ownership. A slot absent from this map is "ready". */
+const slotStates = new Map<string, SlotState>();
 let processingReminderQueue = false;
 let nextReminderSendAt = 0;
 let queueDay = dayjs().tz(tz).format("YYYY-MM-DD");
@@ -69,24 +78,6 @@ function noteTelegramBackoff(err: any) {
 
 function makeSlotKey(chatId: string, dateStr: string, doses: any[]) {
   return `${chatId}|${dateStr}|${getDoseDisplayTime(doses[0])}`;
-}
-
-function noteDeferredSlot(slotKey: string, err: any) {
-  const retryAfter = err?.response?.parameters?.retry_after;
-  if (!retryAfter) return false;
-  const until = Date.now() + (Number(retryAfter) * 1000);
-  deferredSlotUntil.set(slotKey, until);
-  return true;
-}
-
-function isDeferredSlot(slotKey: string) {
-  const until = deferredSlotUntil.get(slotKey);
-  if (!until) return false;
-  if (Date.now() >= until) {
-    deferredSlotUntil.delete(slotKey);
-    return false;
-  }
-  return true;
 }
 
 function isTelegramBackedOff() {
@@ -393,17 +384,50 @@ async function sendDoseMessageNow(chatId: string, doses: any[], dateStr: string)
 
 function enqueueReminderJob(chatId: string, doses: any[], dateStr: string, source: "scheduled" | "manual") {
   const slotKey = makeSlotKey(chatId, dateStr, doses);
-  if (isDeferredSlot(slotKey) || queuedSlotKeys.has(slotKey)) return false;
-  reminderQueue.push({ slotKey, chatId, dateStr, doses, source });
-  queuedSlotKeys.add(slotKey);
+  const existing = slotStates.get(slotKey);
+  if (existing) {
+    if (existing.status === "deferred") {
+      void debugLog("slot.skip_deferred", {
+        slot: getDoseDisplayTime(doses[0]),
+        details: { slotKey, deferredUntil: existing.deferredUntil, nextAttemptAt: existing.nextAttemptAt, source }
+      });
+    }
+    return false;
+  }
+  const job: ReminderJob = { slotKey, chatId, dateStr, doses, source };
+  reminderQueue.push(job);
+  slotStates.set(slotKey, { status: "queued", job });
   return true;
+}
+
+/**
+ * Promotes any deferred slot whose nextAttemptAt has passed back into the
+ * send queue.  Called at the top of every processReminderQueue() tick so
+ * retries happen exactly once, without waiting for the minute-level tick().
+ */
+function promoteExpiredDeferrals() {
+  const now = Date.now();
+  for (const [slotKey, state] of slotStates) {
+    if (state.status === "deferred" && now >= (state.nextAttemptAt ?? 0)) {
+      reminderQueue.push(state.job);
+      slotStates.set(slotKey, { status: "queued", job: state.job });
+      void debugLog("slot.retry_released", {
+        slot: getDoseDisplayTime(state.job.doses[0]),
+        details: { slotKey, wasNextAttemptAt: state.nextAttemptAt }
+      });
+    }
+  }
 }
 
 async function processReminderQueue() {
   if (processingReminderQueue) return;
-  if (reminderQueue.length === 0) return;
+  if (reminderQueue.length === 0 && [...slotStates.values()].every(s => s.status !== "deferred")) return;
   processingReminderQueue = true;
   try {
+    promoteExpiredDeferrals();
+
+    if (reminderQueue.length === 0) return;
+
     const nowMs = Date.now();
     if (nowMs < telegramBackoffUntil || nowMs < nextReminderSendAt) {
       return;
@@ -412,9 +436,18 @@ async function processReminderQueue() {
     const job = reminderQueue[0];
     const { slotKey, chatId, dateStr, doses, source } = job;
 
+    await debugLog("send.attempt", {
+      slot: getDoseDisplayTime(doses[0]),
+      details: { slotKey, source, doseIds: doses.map((d: any) => d.id) }
+    });
+
     try {
       const messageId = await sendDoseMessageNow(chatId, doses, dateStr);
-      deferredSlotUntil.delete(slotKey);
+
+      await debugLog("send.ok", {
+        slot: getDoseDisplayTime(doses[0]),
+        details: { slotKey, message_id: messageId }
+      });
 
       for (const dose of doses) {
         const occId = occurrenceId(dose, dateStr);
@@ -433,14 +466,41 @@ async function processReminderQueue() {
       }
 
       reminderQueue.shift();
-      queuedSlotKeys.delete(slotKey);
+      slotStates.delete(slotKey);
       nextReminderSendAt = Date.now() + TELEGRAM_SEND_INTERVAL_MS;
-    } catch (err) {
+    } catch (err: any) {
       noteTelegramBackoff(err);
-      noteDeferredSlot(slotKey, err);
-      console.error("Send reminder failed", err);
+      const retryAfter = err?.response?.parameters?.retry_after;
       reminderQueue.shift();
-      queuedSlotKeys.delete(slotKey);
+
+      if (retryAfter) {
+        const deferredAt = Date.now();
+        const deferredUntil = deferredAt + Number(retryAfter) * 1000;
+        slotStates.set(slotKey, {
+          status: "deferred",
+          job,
+          deferredAt,
+          deferredUntil,
+          nextAttemptAt: deferredUntil
+        });
+        await debugLog("send.429", {
+          slot: getDoseDisplayTime(doses[0]),
+          details: { slotKey, retry_after: retryAfter }
+        });
+        await debugLog("slot.deferred_until", {
+          slot: getDoseDisplayTime(doses[0]),
+          details: { slotKey, deferredUntil: new Date(deferredUntil).toISOString() }
+        });
+        await debugLog("slot.retry_scheduled", {
+          slot: getDoseDisplayTime(doses[0]),
+          details: { slotKey, nextAttemptAt: new Date(deferredUntil).toISOString() }
+        });
+      } else {
+        // Non-429 error: release the slot so tick() can re-evaluate normally
+        slotStates.delete(slotKey);
+      }
+
+      console.error("Send reminder failed", err);
     }
   } finally {
     processingReminderQueue = false;
@@ -482,7 +542,16 @@ async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
 
   for (const group of Object.values(bySlot)) {
     const slotKey = makeSlotKey(chatId, dateStr, group);
-    if (isDeferredSlot(slotKey)) continue;
+    const slotState = slotStates.get(slotKey);
+    if (slotState) {
+      if (slotState.status === "deferred") {
+        void debugLog("slot.skip_deferred", {
+          slot: getDoseDisplayTime(group[0]),
+          details: { slotKey, deferredUntil: slotState.deferredUntil, source: "manual" }
+        });
+      }
+      continue;
+    }
 
     const existingRows = [];
     for (const dose of group) {
@@ -507,8 +576,7 @@ async function tick() {
 
   if (dateStr !== queueDay) {
     reminderQueue.length = 0;
-    queuedSlotKeys.clear();
-    deferredSlotUntil.clear();
+    slotStates.clear();
     nextReminderSendAt = 0;
     queueDay = dateStr;
     await debugLog("queue.cleared.day_change", { details: { newDay: dateStr } });
@@ -658,16 +726,33 @@ async function handleQueueStatus(ctx: any) {
   const now = Date.now();
   const nextMs = Math.max(0, nextReminderSendAt - now);
   const backoffMs = Math.max(0, telegramBackoffUntil - now);
-  const text = [
+
+  const queuedSlots = [...slotStates.values()].filter(s => s.status === "queued");
+  const deferredSlots = [...slotStates.values()].filter(s => s.status === "deferred");
+
+  const deferredLines = deferredSlots.map(s => {
+    const retryInMs = Math.max(0, (s.nextAttemptAt ?? 0) - now);
+    const displaySlot = getDoseDisplayTime(s.job.doses[0]);
+    return `  • ${displaySlot} (${s.job.dateStr}) → retry in ${Math.ceil(retryInMs / 1000)}s`;
+  });
+
+  const oldestDeferredAgeMs = deferredSlots.reduce<number>((acc, s) => {
+    if (s.deferredAt === undefined) return acc;
+    return Math.max(acc, now - s.deferredAt);
+  }, 0);
+
+  const lines = [
     `Queue size: ${reminderQueue.length}`,
-    `Queued slots: ${queuedSlotKeys.size}`,
-    `Deferred slots: ${deferredSlotUntil.size}`,
+    `Queued: ${queuedSlots.length}`,
+    `Deferred: ${deferredSlots.length}`,
+    ...(deferredLines.length ? deferredLines : []),
+    ...(deferredSlots.length ? [`Oldest deferred: ${Math.ceil(oldestDeferredAgeMs / 1000)}s ago`] : []),
     `Next send in: ${Math.ceil(nextMs / 1000)}s`,
     `Global backoff: ${Math.ceil(backoffMs / 1000)}s`,
     `Queue day: ${queueDay}`
   ].join("\n");
 
-  return safeReply(ctx, text, MAIN_KEYBOARD);
+  return safeReply(ctx, lines, MAIN_KEYBOARD);
 }
 
 bot.hears(/^\/status(?:@\w+)?$/i, handleStatus);
