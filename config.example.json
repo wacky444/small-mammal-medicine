@@ -12,7 +12,7 @@
     "windowStartOffsetMinutes": -30
   },
   "meds": [
-    { "id": "medicine-1-timed", "label": "Medicine 1", "time": "08:30", "schedule": "daily" },
+    { "id": "medicine-1-timed", "label": "Medicine 1", "time": "08:30", "schedule": "daily", "endDate": "2026-12-31" },
     { "id": "medicine-2-morning", "label": "Medicine 2", "period": "morning", "schedule": "daily", "reminderTime": "09:00" },
     { "id": "medicine-3-afternoon", "label": "Medicine 3", "period": "afternoon", "schedule": "daily", "reminderTime": "17:00" },
     { "id": "medicine-4-evening", "label": "Medicine 4", "period": "evening", "schedule": "daily", "reminderTime": "21:00" },
