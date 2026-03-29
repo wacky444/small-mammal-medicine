@@ -188,34 +188,36 @@ function getDefaultPeriodReminderTime(period: string) {
   return "09:00";
 }
 
-function getDoseWindow(dose: any, now: dayjs.Dayjs) {
-  const day = now.tz(tz).startOf("day");
+function atLocalTime(now: dayjs.Dayjs, hhmm: string) {
+  const dateStr = now.tz(tz).format("YYYY-MM-DD");
+  return dayjs.tz(`${dateStr} ${hhmm}`, "YYYY-MM-DD HH:mm", tz).second(0).millisecond(0);
+}
 
+function getDoseWindow(dose: any, now: dayjs.Dayjs) {
   if (dose.period) {
     const reminderTime = dose.reminderTime ?? getDefaultPeriodReminderTime(dose.period);
-    const [baseH, baseM] = reminderTime.split(":").map(Number);
-    const base = day.hour(baseH).minute(baseM).second(0).millisecond(0);
+    const base = atLocalTime(now, reminderTime);
 
     if (dose.period === "morning") {
-      const start = day.hour(6).minute(0).second(0).millisecond(0);
-      const end = day.hour(14).minute(0).second(0).millisecond(0);
+      const start = atLocalTime(now, "06:00");
+      const end = atLocalTime(now, "14:00");
       return { start, end, base };
     }
 
     if (dose.period === "afternoon") {
-      const start = day.hour(14).minute(1).second(0).millisecond(0);
-      const end = day.hour(23).minute(59).second(59).millisecond(999);
+      const start = atLocalTime(now, "14:01");
+      const end = atLocalTime(now, "23:59").second(59).millisecond(999);
       return { start, end, base };
     }
 
     if (dose.period === "evening") {
-      const start = day.hour(18).minute(0).second(0).millisecond(0);
-      const end = day.hour(23).minute(59).second(59).millisecond(999);
+      const start = atLocalTime(now, "18:00");
+      const end = atLocalTime(now, "23:59").second(59).millisecond(999);
       return { start, end, base };
     }
 
-    const start = day.hour(6).minute(0).second(0).millisecond(0);
-    const end = day.hour(23).minute(59).second(59).millisecond(999);
+    const start = atLocalTime(now, "06:00");
+    const end = atLocalTime(now, "23:59").second(59).millisecond(999);
     return { start, end, base };
   }
 
@@ -223,8 +225,7 @@ function getDoseWindow(dose: any, now: dayjs.Dayjs) {
   const windowStartOffsetMinutes =
     dose.windowStartOffsetMinutes ?? defaults.windowStartOffsetMinutes;
 
-  const [h, m] = dose.time.split(":").map(Number);
-  const base = day.hour(h).minute(m).second(0).millisecond(0);
+  const base = atLocalTime(now, dose.time);
   const start = base.add(windowStartOffsetMinutes, "minute");
   const end = start.add(windowMinutes, "minute");
   return { start, end, base };
