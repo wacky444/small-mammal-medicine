@@ -175,6 +175,17 @@ await db.exec(`
     slot TEXT,
     details TEXT
   );
+  CREATE TABLE IF NOT EXISTS food_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    pienso_grams INTEGER NOT NULL,
+    lata_halves INTEGER NOT NULL,
+    done_at TEXT NOT NULL,
+    user_id TEXT,
+    user_name TEXT,
+    UNIQUE(date, chat_id)
+  );
 `);
 
 function isAdmin(userId?: number) {
@@ -375,6 +386,84 @@ function buildButtons(doses: any[], dateStr: string) {
     )
   );
   return Markup.inlineKeyboard(buttons, { columns: 1 });
+}
+
+type FoodState = {
+  piensoGrams: number;
+  lataHalves: number;
+  history: Array<{ piensoDelta: number; lataDelta: number }>;
+};
+
+const foodStates = new Map<string, FoodState>();
+
+function foodStateKey(chatId: string, dateStr: string) {
+  return `${chatId}:${dateStr}`;
+}
+
+function getOrCreateFoodState(chatId: string, dateStr: string) {
+  const key = foodStateKey(chatId, dateStr);
+  const existing = foodStates.get(key);
+  if (existing) return existing;
+  const created: FoodState = { piensoGrams: 0, lataHalves: 0, history: [] };
+  foodStates.set(key, created);
+  return created;
+}
+
+function foodText(dateStr: string, s: FoodState) {
+  const lataText = `${s.lataHalves}/2`;
+  const piensoTarget = 45;
+  const piensoProgress = `${s.piensoGrams}/${piensoTarget}g`;
+  return [
+    `🍽️ Comida Mosti (${dateStr})`,
+    `• Pienso Mosti: ${piensoProgress}`,
+    `• Lata Mosti: ${lataText}`
+  ].join("\n");
+}
+
+function foodKeyboard(chatId: string, dateStr: string, state: FoodState) {
+  const key = foodStateKey(chatId, dateStr);
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("+5g pienso", `food:add:${key}:5:0`),
+      Markup.button.callback("+10g pienso", `food:add:${key}:10:0`),
+      Markup.button.callback("+20g pienso", `food:add:${key}:20:0`)
+    ],
+    [
+      Markup.button.callback("+media lata", `food:add:${key}:0:1`)
+    ],
+    [
+      Markup.button.callback("↩️ Undo", `food:undo:${key}`),
+      Markup.button.callback("🧹 Reset", `food:reset:${key}`),
+      Markup.button.callback("✅ Done", `food:done:${key}`)
+    ]
+  ]);
+}
+
+async function upsertFoodLog(opts: {
+  dateStr: string;
+  chatId: string;
+  piensoGrams: number;
+  lataHalves: number;
+  userId?: number;
+  userName?: string;
+}) {
+  await db.run(
+    `INSERT INTO food_log (date, chat_id, pienso_grams, lata_halves, done_at, user_id, user_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(date, chat_id) DO UPDATE SET
+       pienso_grams = excluded.pienso_grams,
+       lata_halves = excluded.lata_halves,
+       done_at = excluded.done_at,
+       user_id = excluded.user_id,
+       user_name = excluded.user_name`,
+    opts.dateStr,
+    opts.chatId,
+    opts.piensoGrams,
+    opts.lataHalves,
+    dayjs().toISOString(),
+    opts.userId?.toString() ?? null,
+    opts.userName ?? null
+  );
 }
 
 async function sendDoseMessageNow(chatId: string, doses: any[], dateStr: string) {
@@ -762,12 +851,40 @@ async function handleQueueStatus(ctx: any) {
   return safeReply(ctx, lines, MAIN_KEYBOARD);
 }
 
+async function handleFood(ctx: any) {
+  const now = dayjs().tz(tz);
+  const dateStr = now.format("YYYY-MM-DD");
+  const chatId = ctx.chat?.id?.toString();
+  if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
+
+  const existing = await db.get(
+    "SELECT pienso_grams, lata_halves FROM food_log WHERE date = ? AND chat_id = ?",
+    dateStr,
+    chatId
+  );
+
+  const state = getOrCreateFoodState(chatId, dateStr);
+  if (existing) {
+    state.piensoGrams = existing.pienso_grams ?? 0;
+    state.lataHalves = existing.lata_halves ?? 0;
+    state.history = [];
+  }
+
+  return enqueueChatOp(chatId, () => bot.telegram.sendMessage(
+    chatId,
+    foodText(dateStr, state),
+    foodKeyboard(chatId, dateStr, state)
+  ));
+}
+
 bot.hears(/^\/status(?:@\w+)?$/i, handleStatus);
 bot.hears(/^\/due(?:@\w+)?$/i, handleDue);
 bot.hears(/^\/queue(?:@\w+)?$/i, handleQueueStatus);
+bot.hears(/^\/food(?:@\w+)?$/i, handleFood);
 bot.hears(/^status$/i, handleStatus);
 bot.hears(/^pendientes$/i, handleDue);
 bot.hears(/^queue$/i, handleQueueStatus);
+bot.hears(/^food$/i, handleFood);
 
 bot.action(/give:(.+):(.+)/, async (ctx) => {
   const doseId = ctx.match[1];
@@ -807,9 +924,104 @@ bot.action(/give:(.+):(.+)/, async (ctx) => {
   }
 });
 
+bot.action(/food:add:([^:]+:[^:]+):(-?\d+):(\d+)/, async (ctx) => {
+  const key = ctx.match[1];
+  const piensoDelta = Number(ctx.match[2]);
+  const lataDelta = Number(ctx.match[3]);
+  const [chatId, dateStr] = key.split(":");
+  const state = getOrCreateFoodState(chatId, dateStr);
+
+  state.history.push({ piensoDelta, lataDelta });
+  state.piensoGrams = Math.max(0, state.piensoGrams + piensoDelta);
+  state.lataHalves = Math.max(0, Math.min(2, state.lataHalves + lataDelta));
+
+  try {
+    const chatKey = ctx.chat?.id?.toString?.() ?? "food";
+    await enqueueChatOp(chatKey, () => ctx.editMessageText(
+      foodText(dateStr, state),
+      foodKeyboard(chatId, dateStr, state)
+    ));
+    await enqueueChatOp("callback", () => ctx.answerCbQuery("Updated"), false);
+  } catch (err) {
+    console.error("Failed to update food message", err);
+  }
+});
+
+bot.action(/food:undo:([^:]+:[^:]+)/, async (ctx) => {
+  const key = ctx.match[1];
+  const [chatId, dateStr] = key.split(":");
+  const state = getOrCreateFoodState(chatId, dateStr);
+  const last = state.history.pop();
+  if (last) {
+    state.piensoGrams = Math.max(0, state.piensoGrams - last.piensoDelta);
+    state.lataHalves = Math.max(0, Math.min(2, state.lataHalves - last.lataDelta));
+  }
+
+  try {
+    const chatKey = ctx.chat?.id?.toString?.() ?? "food";
+    await enqueueChatOp(chatKey, () => ctx.editMessageText(
+      foodText(dateStr, state),
+      foodKeyboard(chatId, dateStr, state)
+    ));
+    await enqueueChatOp("callback", () => ctx.answerCbQuery(last ? "Undone" : "Nothing to undo"), false);
+  } catch (err) {
+    console.error("Failed to undo food update", err);
+  }
+});
+
+bot.action(/food:reset:([^:]+:[^:]+)/, async (ctx) => {
+  const key = ctx.match[1];
+  const [chatId, dateStr] = key.split(":");
+  const state = getOrCreateFoodState(chatId, dateStr);
+  state.piensoGrams = 0;
+  state.lataHalves = 0;
+  state.history = [];
+
+  try {
+    const chatKey = ctx.chat?.id?.toString?.() ?? "food";
+    await enqueueChatOp(chatKey, () => ctx.editMessageText(
+      foodText(dateStr, state),
+      foodKeyboard(chatId, dateStr, state)
+    ));
+    await enqueueChatOp("callback", () => ctx.answerCbQuery("Reset"), false);
+  } catch (err) {
+    console.error("Failed to reset food", err);
+  }
+});
+
+bot.action(/food:done:([^:]+:[^:]+)/, async (ctx) => {
+  const key = ctx.match[1];
+  const [chatId, dateStr] = key.split(":");
+  const state = getOrCreateFoodState(chatId, dateStr);
+
+  try {
+    await upsertFoodLog({
+      dateStr,
+      chatId,
+      piensoGrams: state.piensoGrams,
+      lataHalves: state.lataHalves,
+      userId: ctx.from?.id,
+      userName: ctx.from?.username ?? ctx.from?.first_name
+    });
+
+    const chatKey = ctx.chat?.id?.toString?.() ?? "food";
+    await enqueueChatOp(chatKey, () => ctx.editMessageText(
+      `${foodText(dateStr, state)}\n✅ Guardado`,
+      Markup.inlineKeyboard([])
+    ));
+    await enqueueChatOp("callback", () => ctx.answerCbQuery("Saved ✅"), false);
+  } catch (err) {
+    console.error("Failed to save food", err);
+    try {
+      await enqueueChatOp("callback", () => ctx.answerCbQuery("Save failed"), false);
+    } catch {}
+  }
+});
+
 const BOT_COMMANDS = [
   { command: "status", description: "Ver estado de medicación" },
   { command: "due", description: "Mostrar medicinas pendientes con botones" },
+  { command: "food", description: "Registrar comida de Mosti" },
   { command: "queue", description: "Ver cola y rate limit (admin)" },
   { command: "setchat", description: "Fijar este chat como destino (admin)" },
   { command: "ping", description: "Comprobar estado del bot" }
