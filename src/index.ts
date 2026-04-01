@@ -886,16 +886,26 @@ bot.hears(/^pendientes$/i, handleDue);
 bot.hears(/^queue$/i, handleQueueStatus);
 bot.hears(/^food$/i, handleFood);
 
+async function answerCbQuick(ctx: any, text?: string) {
+  try {
+    await ctx.answerCbQuery(text);
+  } catch {
+    // ignore expired callback errors
+  }
+}
+
 bot.action(/give:(.+):(.+)/, async (ctx) => {
   const doseId = ctx.match[1];
   const dateStr = ctx.match[2];
   const dose = meds.find((m: any) => m.id === doseId);
-  if (!dose) return ctx.answerCbQuery("Unknown dose");
+  if (!dose) return answerCbQuick(ctx, "Unknown dose");
 
   const occId = occurrenceId(dose, dateStr);
   if (await doseGiven(occId)) {
-    return ctx.answerCbQuery("Already marked");
+    return answerCbQuick(ctx, "Already marked");
   }
+
+  await answerCbQuick(ctx, "Marked ✅");
 
   await markDoseGiven({
     occId,
@@ -916,12 +926,6 @@ bot.action(/give:(.+):(.+)/, async (ctx) => {
   } catch (err) {
     console.error("Failed to update reminder buttons", err);
   }
-
-  try {
-    await enqueueChatOp("callback", () => ctx.answerCbQuery("Marked ✅"), false);
-  } catch (err) {
-    console.error("Failed to answer callback query", err);
-  }
 });
 
 bot.action(/food:add:([^:]+:[^:]+):(-?\d+):(\d+)/, async (ctx) => {
@@ -941,7 +945,7 @@ bot.action(/food:add:([^:]+:[^:]+):(-?\d+):(\d+)/, async (ctx) => {
       foodText(dateStr, state),
       foodKeyboard(chatId, dateStr, state)
     ));
-    await enqueueChatOp("callback", () => ctx.answerCbQuery("Updated"), false);
+    await answerCbQuick(ctx, "Updated");
   } catch (err) {
     console.error("Failed to update food message", err);
   }
@@ -963,7 +967,7 @@ bot.action(/food:undo:([^:]+:[^:]+)/, async (ctx) => {
       foodText(dateStr, state),
       foodKeyboard(chatId, dateStr, state)
     ));
-    await enqueueChatOp("callback", () => ctx.answerCbQuery(last ? "Undone" : "Nothing to undo"), false);
+    await answerCbQuick(ctx, last ? "Undone" : "Nothing to undo");
   } catch (err) {
     console.error("Failed to undo food update", err);
   }
@@ -983,7 +987,7 @@ bot.action(/food:reset:([^:]+:[^:]+)/, async (ctx) => {
       foodText(dateStr, state),
       foodKeyboard(chatId, dateStr, state)
     ));
-    await enqueueChatOp("callback", () => ctx.answerCbQuery("Reset"), false);
+    await answerCbQuick(ctx, "Reset");
   } catch (err) {
     console.error("Failed to reset food", err);
   }
@@ -1009,11 +1013,11 @@ bot.action(/food:done:([^:]+:[^:]+)/, async (ctx) => {
       `${foodText(dateStr, state)}\n✅ Guardado`,
       Markup.inlineKeyboard([])
     ));
-    await enqueueChatOp("callback", () => ctx.answerCbQuery("Saved ✅"), false);
+    await answerCbQuick(ctx, "Saved ✅");
   } catch (err) {
     console.error("Failed to save food", err);
     try {
-      await enqueueChatOp("callback", () => ctx.answerCbQuery("Save failed"), false);
+      await answerCbQuick(ctx, "Save failed");
     } catch {}
   }
 });
