@@ -181,12 +181,33 @@ await db.exec(`
     chat_id TEXT NOT NULL,
     pienso_grams INTEGER NOT NULL,
     lata_halves INTEGER NOT NULL,
+    colin_sobre_halves INTEGER NOT NULL DEFAULT 0,
+    colin_churu_quarters INTEGER NOT NULL DEFAULT 0,
     done_at TEXT NOT NULL,
     user_id TEXT,
     user_name TEXT,
     UNIQUE(date, chat_id)
   );
+  CREATE TABLE IF NOT EXISTS tracker_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    event_date TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    user_id TEXT,
+    user_name TEXT
+  );
 `);
+
+async function ensureColumn(table: string, column: string, ddl: string) {
+  const cols = await db.all(`PRAGMA table_info(${table})`);
+  if (!cols.some((c: any) => c.name === column)) {
+    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
+}
+
+await ensureColumn("food_log", "colin_sobre_halves", "colin_sobre_halves INTEGER NOT NULL DEFAULT 0");
+await ensureColumn("food_log", "colin_churu_quarters", "colin_churu_quarters INTEGER NOT NULL DEFAULT 0");
 
 function isAdmin(userId?: number) {
   return userId && admins.includes(userId);
@@ -391,7 +412,9 @@ function buildButtons(doses: any[], dateStr: string) {
 type FoodState = {
   piensoGrams: number;
   lataHalves: number;
-  history: Array<{ piensoDelta: number; lataDelta: number }>;
+  colinSobreHalves: number;
+  colinChuruQuarters: number;
+  history: Array<{ piensoDelta: number; lataDelta: number; colinSobreDelta: number; colinChuruDelta: number }>;
 };
 
 const foodStates = new Map<string, FoodState>();
@@ -404,7 +427,7 @@ function getOrCreateFoodState(chatId: string, dateStr: string) {
   const key = foodStateKey(chatId, dateStr);
   const existing = foodStates.get(key);
   if (existing) return existing;
-  const created: FoodState = { piensoGrams: 0, lataHalves: 0, history: [] };
+  const created: FoodState = { piensoGrams: 0, lataHalves: 0, colinSobreHalves: 0, colinChuruQuarters: 0, history: [] };
   foodStates.set(key, created);
   return created;
 }
@@ -413,10 +436,14 @@ function foodText(dateStr: string, s: FoodState) {
   const lataText = `${s.lataHalves}/2`;
   const piensoTarget = 45;
   const piensoProgress = `${s.piensoGrams}/${piensoTarget}g`;
+  const colinSobreText = `${s.colinSobreHalves}/2`;
+  const colinChuruText = `${s.colinChuruQuarters}/4`;
   return [
-    `🍽️ Comida Mosti (${dateStr})`,
-    `• Pienso Mosti: ${piensoProgress}`,
-    `• Lata Mosti: ${lataText}`
+    `🍽️ Comida (${dateStr})`,
+    `• Mosti pienso: ${piensoProgress}`,
+    `• Mosti lata: ${lataText}`,
+    `• Colin sobre: ${colinSobreText}`,
+    `• Colin churu: ${colinChuruText}`
   ].join("\n");
 }
 
@@ -424,12 +451,21 @@ function foodKeyboard(chatId: string, dateStr: string, state: FoodState) {
   const key = foodStateKey(chatId, dateStr);
   return Markup.inlineKeyboard([
     [
-      Markup.button.callback("+5g pienso", `food:add:${key}:5:0`),
-      Markup.button.callback("+10g pienso", `food:add:${key}:10:0`),
-      Markup.button.callback("+20g pienso", `food:add:${key}:20:0`)
+      Markup.button.callback("+5g pienso", `food:add:${key}:5:0:0:0`),
+      Markup.button.callback("+10g pienso", `food:add:${key}:10:0:0:0`),
+      Markup.button.callback("+20g pienso", `food:add:${key}:20:0:0:0`)
     ],
     [
-      Markup.button.callback("+media lata", `food:add:${key}:0:1`)
+      Markup.button.callback("+media lata mosti", `food:add:${key}:0:1:0:0`)
+    ],
+    [
+      Markup.button.callback("+1/2 sobre colin", `food:add:${key}:0:0:1:0`),
+      Markup.button.callback("+1 sobre colin", `food:add:${key}:0:0:2:0`)
+    ],
+    [
+      Markup.button.callback("+1/4 churu", `food:add:${key}:0:0:0:1`),
+      Markup.button.callback("+1/2 churu", `food:add:${key}:0:0:0:2`),
+      Markup.button.callback("+1 churu", `food:add:${key}:0:0:0:4`)
     ],
     [
       Markup.button.callback("↩️ Undo", `food:undo:${key}`),
@@ -444,15 +480,19 @@ async function upsertFoodLog(opts: {
   chatId: string;
   piensoGrams: number;
   lataHalves: number;
+  colinSobreHalves: number;
+  colinChuruQuarters: number;
   userId?: number;
   userName?: string;
 }) {
   await db.run(
-    `INSERT INTO food_log (date, chat_id, pienso_grams, lata_halves, done_at, user_id, user_name)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO food_log (date, chat_id, pienso_grams, lata_halves, colin_sobre_halves, colin_churu_quarters, done_at, user_id, user_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(date, chat_id) DO UPDATE SET
        pienso_grams = excluded.pienso_grams,
        lata_halves = excluded.lata_halves,
+       colin_sobre_halves = excluded.colin_sobre_halves,
+       colin_churu_quarters = excluded.colin_churu_quarters,
        done_at = excluded.done_at,
        user_id = excluded.user_id,
        user_name = excluded.user_name`,
@@ -460,6 +500,8 @@ async function upsertFoodLog(opts: {
     opts.chatId,
     opts.piensoGrams,
     opts.lataHalves,
+    opts.colinSobreHalves,
+    opts.colinChuruQuarters,
     dayjs().toISOString(),
     opts.userId?.toString() ?? null,
     opts.userName ?? null
@@ -783,7 +825,41 @@ bot.hears(/^\/setchat(?:@\w+)?$/i, (ctx) => {
   return safeReply(ctx, `Chat set to ${chatId}`, MAIN_KEYBOARD);
 });
 
-async function buildStatusText(now: dayjs.Dayjs) {
+async function getLastEventDate(chatId: string, eventType: "poop" | "bath") {
+  const row = await db.get(
+    "SELECT event_date FROM tracker_events WHERE chat_id = ? AND event_type = ? ORDER BY id DESC LIMIT 1",
+    chatId,
+    eventType
+  );
+  return row?.event_date ?? null;
+}
+
+async function addTrackerEvent(opts: { chatId: string; eventType: "poop" | "bath"; userId?: number; userName?: string }) {
+  const eventDate = dayjs().tz(tz).format("YYYY-MM-DD");
+  await db.run(
+    `INSERT INTO tracker_events (event_type, event_date, chat_id, created_at, user_id, user_name)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    opts.eventType,
+    eventDate,
+    opts.chatId,
+    dayjs().toISOString(),
+    opts.userId?.toString() ?? null,
+    opts.userName ?? null
+  );
+}
+
+async function undoTrackerEvent(chatId: string, eventType: "poop" | "bath") {
+  const row = await db.get(
+    "SELECT id FROM tracker_events WHERE chat_id = ? AND event_type = ? ORDER BY id DESC LIMIT 1",
+    chatId,
+    eventType
+  );
+  if (!row?.id) return false;
+  await db.run("DELETE FROM tracker_events WHERE id = ?", row.id);
+  return true;
+}
+
+async function buildStatusText(now: dayjs.Dayjs, chatId?: string) {
   const dateStr = now.format("YYYY-MM-DD");
   const activeDoses = meds
     .filter((dose: any) => isDoseActiveToday(dose, now))
@@ -791,6 +867,16 @@ async function buildStatusText(now: dayjs.Dayjs) {
     .sort((a: any, b: any) => getDoseSortKey(a).localeCompare(getDoseSortKey(b)) || a.label.localeCompare(b.label));
 
   const lines: string[] = [];
+
+  if (chatId) {
+    const [lastPoop, lastBath] = await Promise.all([
+      getLastEventDate(chatId, "poop"),
+      getLastEventDate(chatId, "bath")
+    ]);
+    lines.push(`💩 Última caca Mario: ${lastPoop ?? "—"}`);
+    lines.push(`🛁 Último baño Mario: ${lastBath ?? "—"}`);
+    lines.push("");
+  }
 
   for (const dose of activeDoses) {
     const { end } = getDoseWindow(dose, now);
@@ -805,7 +891,8 @@ async function buildStatusText(now: dayjs.Dayjs) {
 
 async function handleStatus(ctx: any) {
   const now = dayjs().tz(tz);
-  const text = await buildStatusText(now);
+  const chatId = ctx.chat?.id?.toString();
+  const text = await buildStatusText(now, chatId);
   await safeReply(ctx, text, MAIN_KEYBOARD);
 }
 
@@ -851,6 +938,44 @@ async function handleQueueStatus(ctx: any) {
   return safeReply(ctx, lines, MAIN_KEYBOARD);
 }
 
+async function handlePoop(ctx: any) {
+  const chatId = ctx.chat?.id?.toString();
+  if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
+  await addTrackerEvent({
+    chatId,
+    eventType: "poop",
+    userId: ctx.from?.id,
+    userName: ctx.from?.username ?? ctx.from?.first_name
+  });
+  return safeReply(ctx, "💩 Caca de Mario registrada.", MAIN_KEYBOARD);
+}
+
+async function handleUndoPoop(ctx: any) {
+  const chatId = ctx.chat?.id?.toString();
+  if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
+  const ok = await undoTrackerEvent(chatId, "poop");
+  return safeReply(ctx, ok ? "↩️ Última caca de Mario eliminada." : "No hay cacas para deshacer.", MAIN_KEYBOARD);
+}
+
+async function handleBath(ctx: any) {
+  const chatId = ctx.chat?.id?.toString();
+  if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
+  await addTrackerEvent({
+    chatId,
+    eventType: "bath",
+    userId: ctx.from?.id,
+    userName: ctx.from?.username ?? ctx.from?.first_name
+  });
+  return safeReply(ctx, "🛁 Baño de Mario registrado.", MAIN_KEYBOARD);
+}
+
+async function handleUndoBath(ctx: any) {
+  const chatId = ctx.chat?.id?.toString();
+  if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
+  const ok = await undoTrackerEvent(chatId, "bath");
+  return safeReply(ctx, ok ? "↩️ Último baño de Mario eliminado." : "No hay baños para deshacer.", MAIN_KEYBOARD);
+}
+
 async function handleFood(ctx: any) {
   const now = dayjs().tz(tz);
   const dateStr = now.format("YYYY-MM-DD");
@@ -858,7 +983,7 @@ async function handleFood(ctx: any) {
   if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
 
   const existing = await db.get(
-    "SELECT pienso_grams, lata_halves FROM food_log WHERE date = ? AND chat_id = ?",
+    "SELECT pienso_grams, lata_halves, colin_sobre_halves, colin_churu_quarters FROM food_log WHERE date = ? AND chat_id = ?",
     dateStr,
     chatId
   );
@@ -867,6 +992,8 @@ async function handleFood(ctx: any) {
   if (existing) {
     state.piensoGrams = existing.pienso_grams ?? 0;
     state.lataHalves = existing.lata_halves ?? 0;
+    state.colinSobreHalves = existing.colin_sobre_halves ?? 0;
+    state.colinChuruQuarters = existing.colin_churu_quarters ?? 0;
     state.history = [];
   }
 
@@ -881,6 +1008,10 @@ bot.hears(/^\/status(?:@\w+)?$/i, handleStatus);
 bot.hears(/^\/due(?:@\w+)?$/i, handleDue);
 bot.hears(/^\/queue(?:@\w+)?$/i, handleQueueStatus);
 bot.hears(/^\/food(?:@\w+)?$/i, handleFood);
+bot.hears(/^\/poop(?:@\w+)?$/i, handlePoop);
+bot.hears(/^\/undopoop(?:@\w+)?$/i, handleUndoPoop);
+bot.hears(/^\/bath(?:@\w+)?$/i, handleBath);
+bot.hears(/^\/undobath(?:@\w+)?$/i, handleUndoBath);
 bot.hears(/^status$/i, handleStatus);
 bot.hears(/^pendientes$/i, handleDue);
 bot.hears(/^queue$/i, handleQueueStatus);
@@ -928,16 +1059,20 @@ bot.action(/give:(.+):(.+)/, async (ctx) => {
   }
 });
 
-bot.action(/food:add:([^:]+:[^:]+):(-?\d+):(\d+)/, async (ctx) => {
+bot.action(/food:add:([^:]+:[^:]+):(-?\d+):(\d+):(\d+):(\d+)/, async (ctx) => {
   const key = ctx.match[1];
   const piensoDelta = Number(ctx.match[2]);
   const lataDelta = Number(ctx.match[3]);
+  const colinSobreDelta = Number(ctx.match[4]);
+  const colinChuruDelta = Number(ctx.match[5]);
   const [chatId, dateStr] = key.split(":");
   const state = getOrCreateFoodState(chatId, dateStr);
 
-  state.history.push({ piensoDelta, lataDelta });
+  state.history.push({ piensoDelta, lataDelta, colinSobreDelta, colinChuruDelta });
   state.piensoGrams = Math.max(0, state.piensoGrams + piensoDelta);
   state.lataHalves = Math.max(0, Math.min(2, state.lataHalves + lataDelta));
+  state.colinSobreHalves = Math.max(0, Math.min(2, state.colinSobreHalves + colinSobreDelta));
+  state.colinChuruQuarters = Math.max(0, Math.min(4, state.colinChuruQuarters + colinChuruDelta));
 
   try {
     const chatKey = ctx.chat?.id?.toString?.() ?? "food";
@@ -959,6 +1094,8 @@ bot.action(/food:undo:([^:]+:[^:]+)/, async (ctx) => {
   if (last) {
     state.piensoGrams = Math.max(0, state.piensoGrams - last.piensoDelta);
     state.lataHalves = Math.max(0, Math.min(2, state.lataHalves - last.lataDelta));
+    state.colinSobreHalves = Math.max(0, Math.min(2, state.colinSobreHalves - last.colinSobreDelta));
+    state.colinChuruQuarters = Math.max(0, Math.min(4, state.colinChuruQuarters - last.colinChuruDelta));
   }
 
   try {
@@ -979,6 +1116,8 @@ bot.action(/food:reset:([^:]+:[^:]+)/, async (ctx) => {
   const state = getOrCreateFoodState(chatId, dateStr);
   state.piensoGrams = 0;
   state.lataHalves = 0;
+  state.colinSobreHalves = 0;
+  state.colinChuruQuarters = 0;
   state.history = [];
 
   try {
@@ -1004,6 +1143,8 @@ bot.action(/food:done:([^:]+:[^:]+)/, async (ctx) => {
       chatId,
       piensoGrams: state.piensoGrams,
       lataHalves: state.lataHalves,
+      colinSobreHalves: state.colinSobreHalves,
+      colinChuruQuarters: state.colinChuruQuarters,
       userId: ctx.from?.id,
       userName: ctx.from?.username ?? ctx.from?.first_name
     });
@@ -1025,7 +1166,11 @@ bot.action(/food:done:([^:]+:[^:]+)/, async (ctx) => {
 const BOT_COMMANDS = [
   { command: "status", description: "Ver estado de medicación" },
   { command: "due", description: "Mostrar medicinas pendientes con botones" },
-  { command: "food", description: "Registrar comida de Mosti" },
+  { command: "food", description: "Registrar comida" },
+  { command: "poop", description: "Registrar caca de Mario" },
+  { command: "undopoop", description: "Deshacer última caca de Mario" },
+  { command: "bath", description: "Registrar baño de Mario" },
+  { command: "undobath", description: "Deshacer último baño de Mario" },
   { command: "queue", description: "Ver cola y rate limit (admin)" },
   { command: "setchat", description: "Fijar este chat como destino (admin)" },
   { command: "ping", description: "Comprobar estado del bot" }
