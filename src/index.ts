@@ -214,6 +214,7 @@ function isAdmin(userId?: number) {
 }
 
 function getDefaultPeriodReminderTime(period: string) {
+  if (period === "earlyMorning") return "05:00";
   if (period === "morning") return "08:00";
   if (period === "afternoon") return "17:00";
   if (period === "evening") return "21:00";
@@ -229,6 +230,12 @@ function getDoseWindow(dose: any, now: dayjs.Dayjs) {
   if (dose.period) {
     const reminderTime = dose.reminderTime ?? getDefaultPeriodReminderTime(dose.period);
     const base = atLocalTime(now, reminderTime);
+
+    if (dose.period === "earlyMorning") {
+      const start = atLocalTime(now, "00:00");
+      const end = atLocalTime(now, "05:59").second(59).millisecond(999);
+      return { start, end, base };
+    }
 
     if (dose.period === "morning") {
       const start = atLocalTime(now, "06:00");
@@ -264,6 +271,7 @@ function getDoseWindow(dose: any, now: dayjs.Dayjs) {
 }
 
 function getDoseDisplayTime(dose: any) {
+  if (dose.period === "earlyMorning") return "Madrugada";
   if (dose.period === "morning") return "Mañana";
   if (dose.period === "afternoon") return "Tarde";
   if (dose.period === "evening") return "Noche";
@@ -272,6 +280,7 @@ function getDoseDisplayTime(dose: any) {
 }
 
 function getDoseSortKey(dose: any) {
+  if (dose.period === "earlyMorning") return "00:00";
   if (dose.period === "morning") return "06:00";
   if (dose.period === "day") return "12:00";
   if (dose.period === "afternoon") return "14:01";
@@ -433,11 +442,11 @@ function getOrCreateFoodState(chatId: string, dateStr: string) {
 }
 
 function foodText(dateStr: string, s: FoodState) {
-  const lataText = `${s.lataHalves}/2`;
+  const lataText = `${(s.lataHalves / 2).toFixed(1)}/1`;
   const piensoTarget = 45;
   const piensoProgress = `${s.piensoGrams}/${piensoTarget}g`;
-  const colinSobreText = `${s.colinSobreHalves}/2`;
-  const colinChuruText = `${s.colinChuruQuarters}/4`;
+  const colinSobreText = `${(s.colinSobreHalves / 2).toFixed(1)}/1`;
+  const colinChuruText = `${(s.colinChuruQuarters / 4).toFixed(2)}/1`;
   return [
     `🍽️ Comida (${dateStr})`,
     `• Mosti pienso: ${piensoProgress}`,
