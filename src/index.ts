@@ -140,7 +140,7 @@ async function safeReply(ctx: any, text: string, extra?: any) {
 }
 
 const MAIN_KEYBOARD = Markup.keyboard([
-  ["Pendientes", "Status"]
+  ["Pendientes", "Status", "Food"]
 ]).resize();
 
 const dbPath = path.resolve(process.cwd(), "data", "meds.db");
