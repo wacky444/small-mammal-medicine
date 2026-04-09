@@ -441,12 +441,17 @@ function getOrCreateFoodState(chatId: string, dateStr: string) {
   return created;
 }
 
+function formatCompactDecimal(n: number) {
+  const s = n.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  return s;
+}
+
 function foodText(dateStr: string, s: FoodState) {
-  const lataText = `${(s.lataHalves / 2).toFixed(1)}/1`;
+  const lataText = `${formatCompactDecimal(s.lataHalves / 2)}`;
   const piensoTarget = 45;
   const piensoProgress = `${s.piensoGrams}/${piensoTarget}g`;
-  const colinSobreText = `${(s.colinSobreHalves / 2).toFixed(1)}/1`;
-  const colinChuruText = `${(s.colinChuruQuarters / 4).toFixed(2)}/1`;
+  const colinSobreText = `${formatCompactDecimal(s.colinSobreHalves / 2)}/2`;
+  const colinChuruText = `${formatCompactDecimal(s.colinChuruQuarters / 4)}`;
   return [
     `🍽️ Comida (${dateStr})`,
     `• Mosti pienso: ${piensoProgress}`,
@@ -1079,9 +1084,9 @@ bot.action(/food:add:([^:]+:[^:]+):(-?\d+):(\d+):(\d+):(\d+)/, async (ctx) => {
 
   state.history.push({ piensoDelta, lataDelta, colinSobreDelta, colinChuruDelta });
   state.piensoGrams = Math.max(0, state.piensoGrams + piensoDelta);
-  state.lataHalves = Math.max(0, Math.min(2, state.lataHalves + lataDelta));
-  state.colinSobreHalves = Math.max(0, Math.min(2, state.colinSobreHalves + colinSobreDelta));
-  state.colinChuruQuarters = Math.max(0, Math.min(4, state.colinChuruQuarters + colinChuruDelta));
+  state.lataHalves = Math.max(0, state.lataHalves + lataDelta);
+  state.colinSobreHalves = Math.max(0, state.colinSobreHalves + colinSobreDelta);
+  state.colinChuruQuarters = Math.max(0, state.colinChuruQuarters + colinChuruDelta);
 
   try {
     const chatKey = ctx.chat?.id?.toString?.() ?? "food";
@@ -1102,9 +1107,9 @@ bot.action(/food:undo:([^:]+:[^:]+)/, async (ctx) => {
   const last = state.history.pop();
   if (last) {
     state.piensoGrams = Math.max(0, state.piensoGrams - last.piensoDelta);
-    state.lataHalves = Math.max(0, Math.min(2, state.lataHalves - last.lataDelta));
-    state.colinSobreHalves = Math.max(0, Math.min(2, state.colinSobreHalves - last.colinSobreDelta));
-    state.colinChuruQuarters = Math.max(0, Math.min(4, state.colinChuruQuarters - last.colinChuruDelta));
+    state.lataHalves = Math.max(0, state.lataHalves - last.lataDelta);
+    state.colinSobreHalves = Math.max(0, state.colinSobreHalves - last.colinSobreDelta);
+    state.colinChuruQuarters = Math.max(0, state.colinChuruQuarters - last.colinChuruDelta);
   }
 
   try {
