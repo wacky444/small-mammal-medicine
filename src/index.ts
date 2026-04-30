@@ -522,6 +522,40 @@ async function upsertFoodLog(opts: {
   );
 }
 
+async function insertFoodSnapshotIfMissing(opts: {
+  dateStr: string;
+  chatId: string;
+  piensoGrams: number;
+  lataHalves: number;
+  colinSobreHalves: number;
+  colinChuruQuarters: number;
+}) {
+  await db.run(
+    `INSERT OR IGNORE INTO food_log (date, chat_id, pienso_grams, lata_halves, colin_sobre_halves, colin_churu_quarters, done_at, user_id, user_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+    opts.dateStr,
+    opts.chatId,
+    opts.piensoGrams,
+    opts.lataHalves,
+    opts.colinSobreHalves,
+    opts.colinChuruQuarters,
+    dayjs().toISOString()
+  );
+}
+
+async function persistFoodState(chatId: string, dateStr: string, state: FoodState, ctx: any) {
+  await upsertFoodLog({
+    dateStr,
+    chatId,
+    piensoGrams: state.piensoGrams,
+    lataHalves: state.lataHalves,
+    colinSobreHalves: state.colinSobreHalves,
+    colinChuruQuarters: state.colinChuruQuarters,
+    userId: ctx?.from?.id,
+    userName: ctx?.from?.username ?? ctx?.from?.first_name
+  });
+}
+
 async function sendDoseMessageNow(chatId: string, doses: any[], dateStr: string) {
   const time = getDoseDisplayTime(doses[0]);
   const labels = doses.map((d: any) => `• ${d.label}`).join("\n");
@@ -990,6 +1024,15 @@ async function handleUndoBath(ctx: any) {
   return safeReply(ctx, ok ? "↩️ Último baño de Mario eliminado." : "No hay baños para deshacer.", MAIN_KEYBOARD);
 }
 
+await insertFoodSnapshotIfMissing({
+  dateStr: "2026-04-30",
+  chatId: String(targetChatId),
+  piensoGrams: 10,
+  lataHalves: 2,
+  colinSobreHalves: 1,
+  colinChuruQuarters: 0
+});
+
 async function handleFood(ctx: any) {
   const now = dayjs().tz(tz);
   const dateStr = now.format("YYYY-MM-DD");
@@ -1089,6 +1132,8 @@ bot.action(/food:add:([^:]+:[^:]+):(-?\d+):(\d+):(\d+):(\d+)/, async (ctx) => {
   state.colinChuruQuarters = Math.max(0, state.colinChuruQuarters + colinChuruDelta);
 
   try {
+    await persistFoodState(chatId, dateStr, state, ctx);
+
     const chatKey = ctx.chat?.id?.toString?.() ?? "food";
     await enqueueChatOp(chatKey, () => ctx.editMessageText(
       foodText(dateStr, state),
@@ -1113,6 +1158,8 @@ bot.action(/food:undo:([^:]+:[^:]+)/, async (ctx) => {
   }
 
   try {
+    await persistFoodState(chatId, dateStr, state, ctx);
+
     const chatKey = ctx.chat?.id?.toString?.() ?? "food";
     await enqueueChatOp(chatKey, () => ctx.editMessageText(
       foodText(dateStr, state),
@@ -1135,6 +1182,8 @@ bot.action(/food:reset:([^:]+:[^:]+)/, async (ctx) => {
   state.history = [];
 
   try {
+    await persistFoodState(chatId, dateStr, state, ctx);
+
     const chatKey = ctx.chat?.id?.toString?.() ?? "food";
     await enqueueChatOp(chatKey, () => ctx.editMessageText(
       foodText(dateStr, state),
@@ -1152,16 +1201,7 @@ bot.action(/food:done:([^:]+:[^:]+)/, async (ctx) => {
   const state = getOrCreateFoodState(chatId, dateStr);
 
   try {
-    await upsertFoodLog({
-      dateStr,
-      chatId,
-      piensoGrams: state.piensoGrams,
-      lataHalves: state.lataHalves,
-      colinSobreHalves: state.colinSobreHalves,
-      colinChuruQuarters: state.colinChuruQuarters,
-      userId: ctx.from?.id,
-      userName: ctx.from?.username ?? ctx.from?.first_name
-    });
+    await persistFoodState(chatId, dateStr, state, ctx);
 
     const chatKey = ctx.chat?.id?.toString?.() ?? "food";
     await enqueueChatOp(chatKey, () => ctx.editMessageText(
