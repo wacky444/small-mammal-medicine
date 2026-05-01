@@ -24,7 +24,7 @@ const {
   admins = [],
   reminders = { repeatCount: 2, repeatEveryMinutes: 15 },
   defaults = { windowMinutes: 120, windowStartOffsetMinutes: 0 },
-  meds = []
+  meds = [],
 } = config;
 
 if (!botToken) {
@@ -37,7 +37,9 @@ let telegramBackoffUntil = 0;
 const chatQueues = new Map<string, Promise<any>>();
 
 const TELEGRAM_GROUP_MESSAGES_PER_MIN = 20;
-const TELEGRAM_SEND_INTERVAL_MS = Math.ceil(60000 / TELEGRAM_GROUP_MESSAGES_PER_MIN);
+const TELEGRAM_SEND_INTERVAL_MS = Math.ceil(
+  60000 / TELEGRAM_GROUP_MESSAGES_PER_MIN,
+);
 
 type ReminderJob = {
   slotKey: string;
@@ -70,7 +72,7 @@ function sleep(ms: number) {
 function noteTelegramBackoff(err: any) {
   const retryAfter = err?.response?.parameters?.retry_after;
   if (!retryAfter) return false;
-  const until = Date.now() + (Number(retryAfter) * 1000);
+  const until = Date.now() + Number(retryAfter) * 1000;
   telegramBackoffUntil = Math.max(telegramBackoffUntil, until);
   console.warn(`Telegram rate limited; backing off for ${retryAfter}s`);
   return true;
@@ -84,11 +86,20 @@ function isTelegramBackedOff() {
   return Date.now() < telegramBackoffUntil;
 }
 
-async function enqueueChatOp<T>(chatKey: string, op: () => Promise<T>, retryOn429 = true): Promise<T | null> {
+async function enqueueChatOp<T>(
+  chatKey: string,
+  op: () => Promise<T>,
+  retryOn429 = true,
+): Promise<T | null> {
   const prev = chatQueues.get(chatKey) ?? Promise.resolve();
   let release!: () => void;
-  const gate = new Promise<void>((resolve) => { release = resolve; });
-  chatQueues.set(chatKey, prev.finally(() => gate));
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  chatQueues.set(
+    chatKey,
+    prev.finally(() => gate),
+  );
 
   await prev.catch(() => {});
 
@@ -140,7 +151,7 @@ async function safeReply(ctx: any, text: string, extra?: any) {
 }
 
 const MAIN_KEYBOARD = Markup.keyboard([
-  ["Pendientes", "Status", "Food"]
+  ["Pendientes", "Status", "Food"],
 ]).resize();
 
 const dbPath = path.resolve(process.cwd(), "data", "meds.db");
@@ -206,8 +217,16 @@ async function ensureColumn(table: string, column: string, ddl: string) {
   }
 }
 
-await ensureColumn("food_log", "colin_sobre_halves", "colin_sobre_halves INTEGER NOT NULL DEFAULT 0");
-await ensureColumn("food_log", "colin_churu_quarters", "colin_churu_quarters INTEGER NOT NULL DEFAULT 0");
+await ensureColumn(
+  "food_log",
+  "colin_sobre_halves",
+  "colin_sobre_halves INTEGER NOT NULL DEFAULT 0",
+);
+await ensureColumn(
+  "food_log",
+  "colin_churu_quarters",
+  "colin_churu_quarters INTEGER NOT NULL DEFAULT 0",
+);
 
 function isAdmin(userId?: number) {
   return userId && admins.includes(userId);
@@ -223,12 +242,16 @@ function getDefaultPeriodReminderTime(period: string) {
 
 function atLocalTime(now: dayjs.Dayjs, hhmm: string) {
   const dateStr = now.tz(tz).format("YYYY-MM-DD");
-  return dayjs.tz(`${dateStr} ${hhmm}`, "YYYY-MM-DD HH:mm", tz).second(0).millisecond(0);
+  return dayjs
+    .tz(`${dateStr} ${hhmm}`, "YYYY-MM-DD HH:mm", tz)
+    .second(0)
+    .millisecond(0);
 }
 
 function getDoseWindow(dose: any, now: dayjs.Dayjs) {
   if (dose.period) {
-    const reminderTime = dose.reminderTime ?? getDefaultPeriodReminderTime(dose.period);
+    const reminderTime =
+      dose.reminderTime ?? getDefaultPeriodReminderTime(dose.period);
     const base = atLocalTime(now, reminderTime);
 
     if (dose.period === "earlyMorning") {
@@ -309,7 +332,15 @@ function occurrenceId(dose: any, dateStr: string) {
   return `${dose.id}:${dateStr}`;
 }
 
-async function debugLog(stage: string, opts: { occurrence_id?: string; dose_id?: string; slot?: string; details?: any } = {}) {
+async function debugLog(
+  stage: string,
+  opts: {
+    occurrence_id?: string;
+    dose_id?: string;
+    slot?: string;
+    details?: any;
+  } = {},
+) {
   try {
     await db.run(
       `INSERT INTO reminder_debug (ts, stage, occurrence_id, dose_id, slot, details)
@@ -319,7 +350,7 @@ async function debugLog(stage: string, opts: { occurrence_id?: string; dose_id?:
       opts.occurrence_id ?? null,
       opts.dose_id ?? null,
       opts.slot ?? null,
-      opts.details ? JSON.stringify(opts.details) : null
+      opts.details ? JSON.stringify(opts.details) : null,
     );
   } catch {
     // ignore debug logging failures
@@ -329,7 +360,7 @@ async function debugLog(stage: string, opts: { occurrence_id?: string; dose_id?:
 async function doseGiven(occId: string) {
   const row = await db.get(
     "SELECT 1 FROM doses_given WHERE occurrence_id = ? LIMIT 1",
-    occId
+    occId,
   );
   return !!row;
 }
@@ -343,18 +374,21 @@ async function markDoseGiven(opts: {
 }) {
   await db.run(
     `INSERT INTO doses_given (occurrence_id, dose_id, given_at, user_id, user_name, chat_id)
-     VALUES (?, ?, ?, ?, ?, ?)` ,
+     VALUES (?, ?, ?, ?, ?, ?)`,
     opts.occId,
     opts.doseId,
     dayjs().toISOString(),
     opts.userId?.toString() ?? null,
     opts.userName ?? null,
-    opts.chatId ?? null
+    opts.chatId ?? null,
   );
 }
 
 async function updateReminder(occId: string, patch: any) {
-  const existing = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
+  const existing = await db.get(
+    "SELECT * FROM reminders WHERE occurrence_id = ?",
+    occId,
+  );
   if (!existing) {
     await db.run(
       `INSERT INTO reminders (occurrence_id, dose_id, date, sent_count, last_sent_at, message_id, chat_id)
@@ -365,55 +399,85 @@ async function updateReminder(occId: string, patch: any) {
       patch.sent_count ?? 0,
       patch.last_sent_at ?? null,
       patch.message_id ?? null,
-      patch.chat_id ?? null
+      patch.chat_id ?? null,
     );
-    await debugLog("updateReminder.inserted", { occurrence_id: occId, dose_id: patch?.dose_id, details: { message_id: patch?.message_id, sent_count: patch?.sent_count, source: patch?.source } });
+    await debugLog("updateReminder.inserted", {
+      occurrence_id: occId,
+      dose_id: patch?.dose_id,
+      details: {
+        message_id: patch?.message_id,
+        sent_count: patch?.sent_count,
+        source: patch?.source,
+      },
+    });
     return;
   }
   await db.run(
     `UPDATE reminders
-     SET sent_count = COALESCE(?, sent_count),
-         last_sent_at = COALESCE(?, last_sent_at),
-         message_id = COALESCE(?, message_id),
-         chat_id = COALESCE(?, chat_id)
+     SET sent_count = CASE WHEN ? THEN ? ELSE sent_count END,
+         last_sent_at = CASE WHEN ? THEN ? ELSE last_sent_at END,
+         message_id = CASE WHEN ? THEN ? ELSE message_id END,
+         chat_id = CASE WHEN ? THEN ? ELSE chat_id END
      WHERE occurrence_id = ?`,
+    patch.sent_count !== undefined ? 1 : 0,
     patch.sent_count ?? null,
+    patch.last_sent_at !== undefined ? 1 : 0,
     patch.last_sent_at ?? null,
+    patch.message_id !== undefined ? 1 : 0,
     patch.message_id ?? null,
+    patch.chat_id !== undefined ? 1 : 0,
     patch.chat_id ?? null,
-    occId
+    occId,
   );
 }
 
 async function maybeClearButtons(now: dayjs.Dayjs) {
-  const rows = await db.all("SELECT * FROM reminders WHERE message_id IS NOT NULL");
+  const rows = await db.all(
+    "SELECT * FROM reminders WHERE message_id IS NOT NULL",
+  );
   for (const row of rows) {
     const dose = meds.find((m: any) => m.id === row.dose_id);
     if (!dose) continue;
     const date = dayjs.tz(row.date, tz);
+    // skip if date is more than 2 days old, to avoid clearing outdated messages on bot restarts
+    if (now.diff(date, "day") > 2) {
+      continue;
+    }
     const { start, end } = getDoseWindow(dose, date);
     if (now.isAfter(end)) {
+      let cleared = false;
       try {
         await bot.telegram.editMessageReplyMarkup(
           row.chat_id,
           Number(row.message_id),
           undefined,
-          undefined
+          undefined,
         );
-      } catch {
-        // ignore
+        cleared = true;
+      } catch (err: any) {
+        const desc = err?.response?.description ?? "";
+        const isIdempotentOrNotEditable =
+          desc.includes("message is not modified") ||
+          desc.includes("message to edit not found") ||
+          desc.includes("message can't be edited");
+
+        if (isIdempotentOrNotEditable) {
+          cleared = true;
+        } else {
+          console.warn("maybeClearButtons transient error:", desc || err);
+        }
       }
-      await updateReminder(row.occurrence_id, { message_id: null });
+
+      if (cleared) {
+        await updateReminder(row.occurrence_id, { message_id: null });
+      }
     }
   }
 }
 
 function buildButtons(doses: any[], dateStr: string) {
   const buttons = doses.map((dose) =>
-    Markup.button.callback(
-      `✅ ${dose.label}`,
-      `give:${dose.id}:${dateStr}`
-    )
+    Markup.button.callback(`✅ ${dose.label}`, `give:${dose.id}:${dateStr}`),
   );
   return Markup.inlineKeyboard(buttons, { columns: 1 });
 }
@@ -423,7 +487,12 @@ type FoodState = {
   lataHalves: number;
   colinSobreHalves: number;
   colinChuruQuarters: number;
-  history: Array<{ piensoDelta: number; lataDelta: number; colinSobreDelta: number; colinChuruDelta: number }>;
+  history: Array<{
+    piensoDelta: number;
+    lataDelta: number;
+    colinSobreDelta: number;
+    colinChuruDelta: number;
+  }>;
 };
 
 const foodStates = new Map<string, FoodState>();
@@ -436,13 +505,22 @@ function getOrCreateFoodState(chatId: string, dateStr: string) {
   const key = foodStateKey(chatId, dateStr);
   const existing = foodStates.get(key);
   if (existing) return existing;
-  const created: FoodState = { piensoGrams: 0, lataHalves: 0, colinSobreHalves: 0, colinChuruQuarters: 0, history: [] };
+  const created: FoodState = {
+    piensoGrams: 0,
+    lataHalves: 0,
+    colinSobreHalves: 0,
+    colinChuruQuarters: 0,
+    history: [],
+  };
   foodStates.set(key, created);
   return created;
 }
 
 function formatCompactDecimal(n: number) {
-  const s = n.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  const s = n
+    .toFixed(2)
+    .replace(/\.00$/, "")
+    .replace(/(\.\d)0$/, "$1");
   return s;
 }
 
@@ -457,7 +535,7 @@ function foodText(dateStr: string, s: FoodState) {
     `• Mosti pienso: ${piensoProgress}`,
     `• Mosti lata: ${lataText}`,
     `• Colin sobre: ${colinSobreText}`,
-    `• Colin churu: ${colinChuruText}`
+    `• Colin churu: ${colinChuruText}`,
   ].join("\n");
 }
 
@@ -467,25 +545,23 @@ function foodKeyboard(chatId: string, dateStr: string, state: FoodState) {
     [
       Markup.button.callback("+5g pienso", `food:add:${key}:5:0:0:0`),
       Markup.button.callback("+10g pienso", `food:add:${key}:10:0:0:0`),
-      Markup.button.callback("+20g pienso", `food:add:${key}:20:0:0:0`)
+      Markup.button.callback("+20g pienso", `food:add:${key}:20:0:0:0`),
     ],
-    [
-      Markup.button.callback("+media lata mosti", `food:add:${key}:0:1:0:0`)
-    ],
+    [Markup.button.callback("+media lata mosti", `food:add:${key}:0:1:0:0`)],
     [
       Markup.button.callback("+1/2 sobre colin", `food:add:${key}:0:0:1:0`),
-      Markup.button.callback("+1 sobre colin", `food:add:${key}:0:0:2:0`)
+      Markup.button.callback("+1 sobre colin", `food:add:${key}:0:0:2:0`),
     ],
     [
       Markup.button.callback("+1/4 churu", `food:add:${key}:0:0:0:1`),
       Markup.button.callback("+1/2 churu", `food:add:${key}:0:0:0:2`),
-      Markup.button.callback("+1 churu", `food:add:${key}:0:0:0:4`)
+      Markup.button.callback("+1 churu", `food:add:${key}:0:0:0:4`),
     ],
     [
       Markup.button.callback("↩️ Undo", `food:undo:${key}`),
       Markup.button.callback("🧹 Reset", `food:reset:${key}`),
-      Markup.button.callback("✅ Done", `food:done:${key}`)
-    ]
+      Markup.button.callback("✅ Done", `food:done:${key}`),
+    ],
   ]);
 }
 
@@ -518,7 +594,7 @@ async function upsertFoodLog(opts: {
     opts.colinChuruQuarters,
     dayjs().toISOString(),
     opts.userId?.toString() ?? null,
-    opts.userName ?? null
+    opts.userName ?? null,
   );
 }
 
@@ -539,11 +615,16 @@ async function insertFoodSnapshotIfMissing(opts: {
     opts.lataHalves,
     opts.colinSobreHalves,
     opts.colinChuruQuarters,
-    dayjs().toISOString()
+    dayjs().toISOString(),
   );
 }
 
-async function persistFoodState(chatId: string, dateStr: string, state: FoodState, ctx: any) {
+async function persistFoodState(
+  chatId: string,
+  dateStr: string,
+  state: FoodState,
+  ctx: any,
+) {
   await upsertFoodLog({
     dateStr,
     chatId,
@@ -552,30 +633,44 @@ async function persistFoodState(chatId: string, dateStr: string, state: FoodStat
     colinSobreHalves: state.colinSobreHalves,
     colinChuruQuarters: state.colinChuruQuarters,
     userId: ctx?.from?.id,
-    userName: ctx?.from?.username ?? ctx?.from?.first_name
+    userName: ctx?.from?.username ?? ctx?.from?.first_name,
   });
 }
 
-async function sendDoseMessageNow(chatId: string, doses: any[], dateStr: string) {
+async function sendDoseMessageNow(
+  chatId: string,
+  doses: any[],
+  dateStr: string,
+) {
   const time = getDoseDisplayTime(doses[0]);
   const labels = doses.map((d: any) => `• ${d.label}`).join("\n");
   const text = `🕒 Medicación (${time})\n${labels}`;
   const msg = await bot.telegram.sendMessage(
     chatId,
     text,
-    buildButtons(doses, dateStr)
+    buildButtons(doses, dateStr),
   );
   return msg.message_id;
 }
 
-function enqueueReminderJob(chatId: string, doses: any[], dateStr: string, source: "scheduled" | "manual") {
+function enqueueReminderJob(
+  chatId: string,
+  doses: any[],
+  dateStr: string,
+  source: "scheduled" | "manual",
+) {
   const slotKey = makeSlotKey(chatId, dateStr, doses);
   const existing = slotStates.get(slotKey);
   if (existing) {
     if (existing.status === "deferred") {
       void debugLog("slot.skip_deferred", {
         slot: getDoseDisplayTime(doses[0]),
-        details: { slotKey, deferredUntil: existing.deferredUntil, nextAttemptAt: existing.nextAttemptAt, source }
+        details: {
+          slotKey,
+          deferredUntil: existing.deferredUntil,
+          nextAttemptAt: existing.nextAttemptAt,
+          source,
+        },
       });
     }
     return false;
@@ -599,7 +694,7 @@ function promoteExpiredDeferrals() {
       slotStates.set(slotKey, { status: "queued", job: state.job });
       void debugLog("slot.retry_released", {
         slot: getDoseDisplayTime(state.job.doses[0]),
-        details: { slotKey, wasNextAttemptAt: state.nextAttemptAt }
+        details: { slotKey, wasNextAttemptAt: state.nextAttemptAt },
       });
     }
   }
@@ -607,7 +702,11 @@ function promoteExpiredDeferrals() {
 
 async function processReminderQueue() {
   if (processingReminderQueue) return;
-  if (reminderQueue.length === 0 && [...slotStates.values()].every(s => s.status !== "deferred")) return;
+  if (
+    reminderQueue.length === 0 &&
+    [...slotStates.values()].every((s) => s.status !== "deferred")
+  )
+    return;
   processingReminderQueue = true;
   try {
     promoteExpiredDeferrals();
@@ -624,7 +723,7 @@ async function processReminderQueue() {
 
     await debugLog("send.attempt", {
       slot: getDoseDisplayTime(doses[0]),
-      details: { slotKey, source, doseIds: doses.map((d: any) => d.id) }
+      details: { slotKey, source, doseIds: doses.map((d: any) => d.id) },
     });
 
     try {
@@ -632,14 +731,23 @@ async function processReminderQueue() {
 
       await debugLog("send.ok", {
         slot: getDoseDisplayTime(doses[0]),
-        details: { slotKey, message_id: messageId }
+        details: { slotKey, message_id: messageId },
       });
 
       for (const dose of doses) {
         const occId = occurrenceId(dose, dateStr);
-        const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
-        const sentCount = source === "scheduled" ? (reminder?.sent_count ?? 0) + 1 : (reminder?.sent_count ?? 0);
-        const lastSentAt = source === "scheduled" ? dayjs().toISOString() : reminder?.last_sent_at ?? null;
+        const reminder = await db.get(
+          "SELECT * FROM reminders WHERE occurrence_id = ?",
+          occId,
+        );
+        const sentCount =
+          source === "scheduled"
+            ? (reminder?.sent_count ?? 0) + 1
+            : (reminder?.sent_count ?? 0);
+        const lastSentAt =
+          source === "scheduled"
+            ? dayjs().toISOString()
+            : (reminder?.last_sent_at ?? null);
 
         await updateReminder(occId, {
           dose_id: dose.id,
@@ -647,7 +755,7 @@ async function processReminderQueue() {
           sent_count: sentCount,
           last_sent_at: lastSentAt,
           message_id: messageId.toString(),
-          chat_id: chatId
+          chat_id: chatId,
         });
       }
 
@@ -667,19 +775,25 @@ async function processReminderQueue() {
           job,
           deferredAt,
           deferredUntil,
-          nextAttemptAt: deferredUntil
+          nextAttemptAt: deferredUntil,
         });
         await debugLog("send.429", {
           slot: getDoseDisplayTime(doses[0]),
-          details: { slotKey, retry_after: retryAfter }
+          details: { slotKey, retry_after: retryAfter },
         });
         await debugLog("slot.deferred_until", {
           slot: getDoseDisplayTime(doses[0]),
-          details: { slotKey, deferredUntil: new Date(deferredUntil).toISOString() }
+          details: {
+            slotKey,
+            deferredUntil: new Date(deferredUntil).toISOString(),
+          },
         });
         await debugLog("slot.retry_scheduled", {
           slot: getDoseDisplayTime(doses[0]),
-          details: { slotKey, nextAttemptAt: new Date(deferredUntil).toISOString() }
+          details: {
+            slotKey,
+            nextAttemptAt: new Date(deferredUntil).toISOString(),
+          },
         });
       } else {
         // Non-429 error: release the slot so tick() can re-evaluate normally
@@ -708,7 +822,11 @@ async function getDueDoses(now: dayjs.Dayjs) {
 
   return dueDoses
     .slice()
-    .sort((a: any, b: any) => getDoseSortKey(a).localeCompare(getDoseSortKey(b)) || a.label.localeCompare(b.label));
+    .sort(
+      (a: any, b: any) =>
+        getDoseSortKey(a).localeCompare(getDoseSortKey(b)) ||
+        a.label.localeCompare(b.label),
+    );
 }
 
 async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
@@ -716,7 +834,13 @@ async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
   const dueDoses = await getDueDoses(now);
 
   if (dueDoses.length === 0) {
-    return enqueueChatOp(chatId, () => bot.telegram.sendMessage(chatId, "No hay medicinas pendientes en este momento.", MAIN_KEYBOARD));
+    return enqueueChatOp(chatId, () =>
+      bot.telegram.sendMessage(
+        chatId,
+        "No hay medicinas pendientes en este momento.",
+        MAIN_KEYBOARD,
+      ),
+    );
   }
 
   const bySlot: Record<string, any[]> = {};
@@ -733,7 +857,11 @@ async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
       if (slotState.status === "deferred") {
         void debugLog("slot.skip_deferred", {
           slot: getDoseDisplayTime(group[0]),
-          details: { slotKey, deferredUntil: slotState.deferredUntil, source: "manual" }
+          details: {
+            slotKey,
+            deferredUntil: slotState.deferredUntil,
+            source: "manual",
+          },
         });
       }
       continue;
@@ -742,11 +870,16 @@ async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
     const existingRows = [];
     for (const dose of group) {
       const occId = occurrenceId(dose, dateStr);
-      const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
+      const reminder = await db.get(
+        "SELECT * FROM reminders WHERE occurrence_id = ?",
+        occId,
+      );
       if (reminder) existingRows.push(reminder);
     }
 
-    const hasActiveMessage = existingRows.some((row: any) => row?.message_id && row?.chat_id === chatId);
+    const hasActiveMessage = existingRows.some(
+      (row: any) => row?.message_id && row?.chat_id === chatId,
+    );
     if (hasActiveMessage) continue;
 
     enqueueReminderJob(chatId, group, dateStr, "manual");
@@ -765,7 +898,9 @@ async function tick() {
     slotStates.clear();
     nextReminderSendAt = 0;
     queueDay = dateStr;
-    await debugLog("queue.cleared.day_change", { details: { newDay: dateStr } });
+    await debugLog("queue.cleared.day_change", {
+      details: { newDay: dateStr },
+    });
   }
 
   await maybeClearButtons(now);
@@ -781,8 +916,13 @@ async function tick() {
     const slot = getDoseDisplayTime(dose);
     if (await doseGiven(occId)) continue;
 
-    const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
-    const lastSentAt = reminder?.last_sent_at ? dayjs(reminder.last_sent_at) : null;
+    const reminder = await db.get(
+      "SELECT * FROM reminders WHERE occurrence_id = ?",
+      occId,
+    );
+    const lastSentAt = reminder?.last_sent_at
+      ? dayjs(reminder.last_sent_at)
+      : null;
     const sentCount = reminder?.sent_count ?? 0;
     const allowRepeats = !dose.period;
     const maxSends = allowRepeats ? 1 + reminders.repeatCount : 1;
@@ -799,12 +939,22 @@ async function tick() {
       occurrence_id: occId,
       dose_id: dose.id,
       slot,
-      details: { sentCount, shouldSendInitial, shouldSendRepeat, base: base.toISOString(), now: now.toISOString() }
+      details: {
+        sentCount,
+        shouldSendInitial,
+        shouldSendRepeat,
+        base: base.toISOString(),
+        now: now.toISOString(),
+      },
     });
 
     if (shouldSendInitial || shouldSendRepeat) {
       dueDoses.push(dose);
-      await debugLog("dose.marked_due", { occurrence_id: occId, dose_id: dose.id, slot });
+      await debugLog("dose.marked_due", {
+        occurrence_id: occId,
+        dose_id: dose.id,
+        slot,
+      });
     }
   }
 
@@ -822,7 +972,10 @@ async function tick() {
     let hasActiveMessage = false;
     for (const dose of group) {
       const occId = occurrenceId(dose, dateStr);
-      const reminder = await db.get("SELECT * FROM reminders WHERE occurrence_id = ?", occId);
+      const reminder = await db.get(
+        "SELECT * FROM reminders WHERE occurrence_id = ?",
+        occId,
+      );
       if (
         reminder?.message_id &&
         reminder?.chat_id === targetChatId &&
@@ -834,18 +987,31 @@ async function tick() {
     }
     if (hasActiveMessage) continue;
 
-    const enqueued = enqueueReminderJob(String(targetChatId), group, dateStr, "scheduled");
-    await debugLog("slot.enqueued", { slot, details: { enqueued, targetChatId } });
+    const enqueued = enqueueReminderJob(
+      String(targetChatId),
+      group,
+      dateStr,
+      "scheduled",
+    );
+    await debugLog("slot.enqueued", {
+      slot,
+      details: { enqueued, targetChatId },
+    });
   }
 }
 
-bot.start((ctx) => safeReply(ctx, "Meds bot online. Use /status", MAIN_KEYBOARD));
+bot.start((ctx) =>
+  safeReply(ctx, "Meds bot online. Use /status", MAIN_KEYBOARD),
+);
 
-bot.telegram.getMe().then((me) => {
-  console.log(`Bot started: @${me.username}`);
-}).catch((err) => {
-  console.error("Bot start error", err);
-});
+bot.telegram
+  .getMe()
+  .then((me) => {
+    console.log(`Bot started: @${me.username}`);
+  })
+  .catch((err) => {
+    console.error("Bot start error", err);
+  });
 
 bot.command("ping", (ctx) => safeReply(ctx, "pong", MAIN_KEYBOARD));
 
@@ -877,12 +1043,17 @@ async function getLastEventDate(chatId: string, eventType: "poop" | "bath") {
   const row = await db.get(
     "SELECT event_date FROM tracker_events WHERE chat_id = ? AND event_type = ? ORDER BY id DESC LIMIT 1",
     chatId,
-    eventType
+    eventType,
   );
   return row?.event_date ?? null;
 }
 
-async function addTrackerEvent(opts: { chatId: string; eventType: "poop" | "bath"; userId?: number; userName?: string }) {
+async function addTrackerEvent(opts: {
+  chatId: string;
+  eventType: "poop" | "bath";
+  userId?: number;
+  userName?: string;
+}) {
   const eventDate = dayjs().tz(tz).format("YYYY-MM-DD");
   await db.run(
     `INSERT INTO tracker_events (event_type, event_date, chat_id, created_at, user_id, user_name)
@@ -892,7 +1063,7 @@ async function addTrackerEvent(opts: { chatId: string; eventType: "poop" | "bath
     opts.chatId,
     dayjs().toISOString(),
     opts.userId?.toString() ?? null,
-    opts.userName ?? null
+    opts.userName ?? null,
   );
 }
 
@@ -900,7 +1071,7 @@ async function undoTrackerEvent(chatId: string, eventType: "poop" | "bath") {
   const row = await db.get(
     "SELECT id FROM tracker_events WHERE chat_id = ? AND event_type = ? ORDER BY id DESC LIMIT 1",
     chatId,
-    eventType
+    eventType,
   );
   if (!row?.id) return false;
   await db.run("DELETE FROM tracker_events WHERE id = ?", row.id);
@@ -912,14 +1083,18 @@ async function buildStatusText(now: dayjs.Dayjs, chatId?: string) {
   const activeDoses = meds
     .filter((dose: any) => isDoseActiveToday(dose, now))
     .slice()
-    .sort((a: any, b: any) => getDoseSortKey(a).localeCompare(getDoseSortKey(b)) || a.label.localeCompare(b.label));
+    .sort(
+      (a: any, b: any) =>
+        getDoseSortKey(a).localeCompare(getDoseSortKey(b)) ||
+        a.label.localeCompare(b.label),
+    );
 
   const lines: string[] = [];
 
   if (chatId) {
     const [lastPoop, lastBath] = await Promise.all([
       getLastEventDate(chatId, "poop"),
-      getLastEventDate(chatId, "bath")
+      getLastEventDate(chatId, "bath"),
     ]);
     lines.push(`💩 Última caca Mario: ${lastPoop ?? "—"}`);
     lines.push(`🛁 Último baño Mario: ${lastBath ?? "—"}`);
@@ -947,21 +1122,27 @@ async function handleStatus(ctx: any) {
 async function handleDue(ctx: any) {
   const now = dayjs().tz(tz);
   const chatId = ctx.chat?.id?.toString();
-  if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
+  if (!chatId)
+    return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
   return sendDueButtonsToChat(chatId, now);
 }
 
 async function handleQueueStatus(ctx: any) {
-  if (!isAdmin(ctx.from?.id)) return safeReply(ctx, "Not allowed", MAIN_KEYBOARD);
+  if (!isAdmin(ctx.from?.id))
+    return safeReply(ctx, "Not allowed", MAIN_KEYBOARD);
 
   const now = Date.now();
   const nextMs = Math.max(0, nextReminderSendAt - now);
   const backoffMs = Math.max(0, telegramBackoffUntil - now);
 
-  const queuedSlots = [...slotStates.values()].filter(s => s.status === "queued");
-  const deferredSlots = [...slotStates.values()].filter(s => s.status === "deferred");
+  const queuedSlots = [...slotStates.values()].filter(
+    (s) => s.status === "queued",
+  );
+  const deferredSlots = [...slotStates.values()].filter(
+    (s) => s.status === "deferred",
+  );
 
-  const deferredLines = deferredSlots.map(s => {
+  const deferredLines = deferredSlots.map((s) => {
     const retryInMs = Math.max(0, (s.nextAttemptAt ?? 0) - now);
     const displaySlot = getDoseDisplayTime(s.job.doses[0]);
     return `  • ${displaySlot} (${s.job.dateStr}) → retry in ${Math.ceil(retryInMs / 1000)}s`;
@@ -977,10 +1158,12 @@ async function handleQueueStatus(ctx: any) {
     `Queued: ${queuedSlots.length}`,
     `Deferred: ${deferredSlots.length}`,
     ...(deferredLines.length ? deferredLines : []),
-    ...(deferredSlots.length ? [`Oldest deferred: ${Math.ceil(oldestDeferredAgeMs / 1000)}s ago`] : []),
+    ...(deferredSlots.length
+      ? [`Oldest deferred: ${Math.ceil(oldestDeferredAgeMs / 1000)}s ago`]
+      : []),
     `Next send in: ${Math.ceil(nextMs / 1000)}s`,
     `Global backoff: ${Math.ceil(backoffMs / 1000)}s`,
-    `Queue day: ${queueDay}`
+    `Queue day: ${queueDay}`,
   ].join("\n");
 
   return safeReply(ctx, lines, MAIN_KEYBOARD);
@@ -988,40 +1171,52 @@ async function handleQueueStatus(ctx: any) {
 
 async function handlePoop(ctx: any) {
   const chatId = ctx.chat?.id?.toString();
-  if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
+  if (!chatId)
+    return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
   await addTrackerEvent({
     chatId,
     eventType: "poop",
     userId: ctx.from?.id,
-    userName: ctx.from?.username ?? ctx.from?.first_name
+    userName: ctx.from?.username ?? ctx.from?.first_name,
   });
   return safeReply(ctx, "💩 Caca de Mario registrada.", MAIN_KEYBOARD);
 }
 
 async function handleUndoPoop(ctx: any) {
   const chatId = ctx.chat?.id?.toString();
-  if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
+  if (!chatId)
+    return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
   const ok = await undoTrackerEvent(chatId, "poop");
-  return safeReply(ctx, ok ? "↩️ Última caca de Mario eliminada." : "No hay cacas para deshacer.", MAIN_KEYBOARD);
+  return safeReply(
+    ctx,
+    ok ? "↩️ Última caca de Mario eliminada." : "No hay cacas para deshacer.",
+    MAIN_KEYBOARD,
+  );
 }
 
 async function handleBath(ctx: any) {
   const chatId = ctx.chat?.id?.toString();
-  if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
+  if (!chatId)
+    return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
   await addTrackerEvent({
     chatId,
     eventType: "bath",
     userId: ctx.from?.id,
-    userName: ctx.from?.username ?? ctx.from?.first_name
+    userName: ctx.from?.username ?? ctx.from?.first_name,
   });
   return safeReply(ctx, "🛁 Baño de Mario registrado.", MAIN_KEYBOARD);
 }
 
 async function handleUndoBath(ctx: any) {
   const chatId = ctx.chat?.id?.toString();
-  if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
+  if (!chatId)
+    return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
   const ok = await undoTrackerEvent(chatId, "bath");
-  return safeReply(ctx, ok ? "↩️ Último baño de Mario eliminado." : "No hay baños para deshacer.", MAIN_KEYBOARD);
+  return safeReply(
+    ctx,
+    ok ? "↩️ Último baño de Mario eliminado." : "No hay baños para deshacer.",
+    MAIN_KEYBOARD,
+  );
 }
 
 await insertFoodSnapshotIfMissing({
@@ -1030,19 +1225,20 @@ await insertFoodSnapshotIfMissing({
   piensoGrams: 10,
   lataHalves: 2,
   colinSobreHalves: 1,
-  colinChuruQuarters: 0
+  colinChuruQuarters: 0,
 });
 
 async function handleFood(ctx: any) {
   const now = dayjs().tz(tz);
   const dateStr = now.format("YYYY-MM-DD");
   const chatId = ctx.chat?.id?.toString();
-  if (!chatId) return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
+  if (!chatId)
+    return safeReply(ctx, "No pude detectar este chat.", MAIN_KEYBOARD);
 
   const existing = await db.get(
     "SELECT pienso_grams, lata_halves, colin_sobre_halves, colin_churu_quarters FROM food_log WHERE date = ? AND chat_id = ?",
     dateStr,
-    chatId
+    chatId,
   );
 
   const state = getOrCreateFoodState(chatId, dateStr);
@@ -1054,11 +1250,13 @@ async function handleFood(ctx: any) {
     state.history = [];
   }
 
-  return enqueueChatOp(chatId, () => bot.telegram.sendMessage(
-    chatId,
-    foodText(dateStr, state),
-    foodKeyboard(chatId, dateStr, state)
-  ));
+  return enqueueChatOp(chatId, () =>
+    bot.telegram.sendMessage(
+      chatId,
+      foodText(dateStr, state),
+      foodKeyboard(chatId, dateStr, state),
+    ),
+  );
 }
 
 bot.hears(/^\/status(?:@\w+)?$/i, handleStatus);
@@ -1100,17 +1298,26 @@ bot.action(/give:(.+):(.+)/, async (ctx) => {
     doseId,
     userId: ctx.from?.id,
     userName: ctx.from?.username ?? ctx.from?.first_name,
-    chatId: ctx.chat?.id?.toString()
+    chatId: ctx.chat?.id?.toString(),
   });
 
   try {
-    const inline = (ctx.callbackQuery as any)?.message?.reply_markup?.inline_keyboard ?? [];
+    const inline =
+      (ctx.callbackQuery as any)?.message?.reply_markup?.inline_keyboard ?? [];
     const filtered = inline
-      .map((row: any[]) => row.filter((button: any) => button.callback_data !== `give:${doseId}:${dateStr}`))
+      .map((row: any[]) =>
+        row.filter(
+          (button: any) => button.callback_data !== `give:${doseId}:${dateStr}`,
+        ),
+      )
       .filter((row: any[]) => row.length > 0);
 
     const chatKey = ctx.chat?.id?.toString?.() ?? "callback";
-    await enqueueChatOp(chatKey, () => ctx.editMessageReplyMarkup(filtered.length > 0 ? { inline_keyboard: filtered } : undefined));
+    await enqueueChatOp(chatKey, () =>
+      ctx.editMessageReplyMarkup(
+        filtered.length > 0 ? { inline_keyboard: filtered } : undefined,
+      ),
+    );
   } catch (err) {
     console.error("Failed to update reminder buttons", err);
   }
@@ -1125,20 +1332,33 @@ bot.action(/food:add:([^:]+:[^:]+):(-?\d+):(\d+):(\d+):(\d+)/, async (ctx) => {
   const [chatId, dateStr] = key.split(":");
   const state = getOrCreateFoodState(chatId, dateStr);
 
-  state.history.push({ piensoDelta, lataDelta, colinSobreDelta, colinChuruDelta });
+  state.history.push({
+    piensoDelta,
+    lataDelta,
+    colinSobreDelta,
+    colinChuruDelta,
+  });
   state.piensoGrams = Math.max(0, state.piensoGrams + piensoDelta);
   state.lataHalves = Math.max(0, state.lataHalves + lataDelta);
-  state.colinSobreHalves = Math.max(0, state.colinSobreHalves + colinSobreDelta);
-  state.colinChuruQuarters = Math.max(0, state.colinChuruQuarters + colinChuruDelta);
+  state.colinSobreHalves = Math.max(
+    0,
+    state.colinSobreHalves + colinSobreDelta,
+  );
+  state.colinChuruQuarters = Math.max(
+    0,
+    state.colinChuruQuarters + colinChuruDelta,
+  );
 
   try {
     await persistFoodState(chatId, dateStr, state, ctx);
 
     const chatKey = ctx.chat?.id?.toString?.() ?? "food";
-    await enqueueChatOp(chatKey, () => ctx.editMessageText(
-      foodText(dateStr, state),
-      foodKeyboard(chatId, dateStr, state)
-    ));
+    await enqueueChatOp(chatKey, () =>
+      ctx.editMessageText(
+        foodText(dateStr, state),
+        foodKeyboard(chatId, dateStr, state),
+      ),
+    );
     await answerCbQuick(ctx, "Updated");
   } catch (err) {
     console.error("Failed to update food message", err);
@@ -1153,18 +1373,26 @@ bot.action(/food:undo:([^:]+:[^:]+)/, async (ctx) => {
   if (last) {
     state.piensoGrams = Math.max(0, state.piensoGrams - last.piensoDelta);
     state.lataHalves = Math.max(0, state.lataHalves - last.lataDelta);
-    state.colinSobreHalves = Math.max(0, state.colinSobreHalves - last.colinSobreDelta);
-    state.colinChuruQuarters = Math.max(0, state.colinChuruQuarters - last.colinChuruDelta);
+    state.colinSobreHalves = Math.max(
+      0,
+      state.colinSobreHalves - last.colinSobreDelta,
+    );
+    state.colinChuruQuarters = Math.max(
+      0,
+      state.colinChuruQuarters - last.colinChuruDelta,
+    );
   }
 
   try {
     await persistFoodState(chatId, dateStr, state, ctx);
 
     const chatKey = ctx.chat?.id?.toString?.() ?? "food";
-    await enqueueChatOp(chatKey, () => ctx.editMessageText(
-      foodText(dateStr, state),
-      foodKeyboard(chatId, dateStr, state)
-    ));
+    await enqueueChatOp(chatKey, () =>
+      ctx.editMessageText(
+        foodText(dateStr, state),
+        foodKeyboard(chatId, dateStr, state),
+      ),
+    );
     await answerCbQuick(ctx, last ? "Undone" : "Nothing to undo");
   } catch (err) {
     console.error("Failed to undo food update", err);
@@ -1185,10 +1413,12 @@ bot.action(/food:reset:([^:]+:[^:]+)/, async (ctx) => {
     await persistFoodState(chatId, dateStr, state, ctx);
 
     const chatKey = ctx.chat?.id?.toString?.() ?? "food";
-    await enqueueChatOp(chatKey, () => ctx.editMessageText(
-      foodText(dateStr, state),
-      foodKeyboard(chatId, dateStr, state)
-    ));
+    await enqueueChatOp(chatKey, () =>
+      ctx.editMessageText(
+        foodText(dateStr, state),
+        foodKeyboard(chatId, dateStr, state),
+      ),
+    );
     await answerCbQuick(ctx, "Reset");
   } catch (err) {
     console.error("Failed to reset food", err);
@@ -1204,10 +1434,12 @@ bot.action(/food:done:([^:]+:[^:]+)/, async (ctx) => {
     await persistFoodState(chatId, dateStr, state, ctx);
 
     const chatKey = ctx.chat?.id?.toString?.() ?? "food";
-    await enqueueChatOp(chatKey, () => ctx.editMessageText(
-      `${foodText(dateStr, state)}\n✅ Guardado`,
-      Markup.inlineKeyboard([])
-    ));
+    await enqueueChatOp(chatKey, () =>
+      ctx.editMessageText(
+        `${foodText(dateStr, state)}\n✅ Guardado`,
+        Markup.inlineKeyboard([]),
+      ),
+    );
     await answerCbQuick(ctx, "Saved ✅");
   } catch (err) {
     console.error("Failed to save food", err);
@@ -1227,7 +1459,7 @@ const BOT_COMMANDS = [
   { command: "undobath", description: "Deshacer último baño de Mario" },
   { command: "queue", description: "Ver cola y rate limit (admin)" },
   { command: "setchat", description: "Fijar este chat como destino (admin)" },
-  { command: "ping", description: "Comprobar estado del bot" }
+  { command: "ping", description: "Comprobar estado del bot" },
 ];
 
 bot.launch().then(async () => {
