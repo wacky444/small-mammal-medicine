@@ -740,14 +740,16 @@ async function processReminderQueue() {
           "SELECT * FROM reminders WHERE occurrence_id = ?",
           occId,
         );
+        const currentSentCount = reminder?.sent_count ?? 0;
+        const nowIso = dayjs().toISOString();
         const sentCount =
           source === "scheduled"
-            ? (reminder?.sent_count ?? 0) + 1
-            : (reminder?.sent_count ?? 0);
+            ? currentSentCount + 1
+            : Math.max(1, currentSentCount);
         const lastSentAt =
           source === "scheduled"
-            ? dayjs().toISOString()
-            : (reminder?.last_sent_at ?? null);
+            ? nowIso
+            : (reminder?.last_sent_at ?? nowIso);
 
         await updateReminder(occId, {
           dose_id: dose.id,
@@ -1280,27 +1282,11 @@ async function answerCbQuick(ctx: any, text?: string) {
   }
 }
 
-bot.action(/give:(.+):(.+)/, async (ctx) => {
-  const doseId = ctx.match[1];
-  const dateStr = ctx.match[2];
-  const dose = meds.find((m: any) => m.id === doseId);
-  if (!dose) return answerCbQuick(ctx, "Unknown dose");
-
-  const occId = occurrenceId(dose, dateStr);
-  if (await doseGiven(occId)) {
-    return answerCbQuick(ctx, "Already marked");
-  }
-
-  await answerCbQuick(ctx, "Marked ✅");
-
-  await markDoseGiven({
-    occId,
-    doseId,
-    userId: ctx.from?.id,
-    userName: ctx.from?.username ?? ctx.from?.first_name,
-    chatId: ctx.chat?.id?.toString(),
-  });
-
+async function removeDoseButtonFromCallbackMessage(
+  ctx: any,
+  doseId: string,
+  dateStr: string,
+) {
   try {
     const inline =
       (ctx.callbackQuery as any)?.message?.reply_markup?.inline_keyboard ?? [];
@@ -1318,9 +1304,42 @@ bot.action(/give:(.+):(.+)/, async (ctx) => {
         filtered.length > 0 ? { inline_keyboard: filtered } : undefined,
       ),
     );
-  } catch (err) {
-    console.error("Failed to update reminder buttons", err);
+  } catch (err: any) {
+    const desc = err?.response?.description ?? "";
+    const ignorable =
+      desc.includes("message is not modified") ||
+      desc.includes("message to edit not found") ||
+      desc.includes("message can't be edited");
+    if (!ignorable) {
+      console.error("Failed to update reminder buttons", err);
+    }
   }
+}
+
+bot.action(/give:(.+):(.+)/, async (ctx) => {
+  const doseId = ctx.match[1];
+  const dateStr = ctx.match[2];
+  const dose = meds.find((m: any) => m.id === doseId);
+  if (!dose) return answerCbQuick(ctx, "Unknown dose");
+
+  const occId = occurrenceId(dose, dateStr);
+  if (await doseGiven(occId)) {
+    await answerCbQuick(ctx, "Already marked");
+    await removeDoseButtonFromCallbackMessage(ctx, doseId, dateStr);
+    return;
+  }
+
+  await answerCbQuick(ctx, "Marked ✅");
+
+  await markDoseGiven({
+    occId,
+    doseId,
+    userId: ctx.from?.id,
+    userName: ctx.from?.username ?? ctx.from?.first_name,
+    chatId: ctx.chat?.id?.toString(),
+  });
+
+  await removeDoseButtonFromCallbackMessage(ctx, doseId, dateStr);
 });
 
 bot.action(/food:add:([^:]+:[^:]+):(-?\d+):(\d+):(\d+):(\d+)/, async (ctx) => {
