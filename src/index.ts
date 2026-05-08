@@ -809,14 +809,20 @@ async function processReminderQueue() {
   }
 }
 
-async function getDueDoses(now: dayjs.Dayjs) {
+async function getDueDoses(now: dayjs.Dayjs, lookAheadMinutes = 30) {
   const dateStr = now.format("YYYY-MM-DD");
   const pending = meds.filter((dose: any) => isDoseActiveToday(dose, now));
 
   const dueDoses: any[] = [];
   for (const dose of pending) {
-    const { start, end } = getDoseWindow(dose, now);
-    if (now.isBefore(start) || now.isAfter(end)) continue;
+    const { start, end, base } = getDoseWindow(dose, now);
+
+    const inCurrentWindow = !now.isBefore(start) && !now.isAfter(end);
+    const upcomingWithinLookAhead =
+      now.isBefore(base) && base.diff(now, "minute") <= lookAheadMinutes;
+
+    if (!inCurrentWindow && !upcomingWithinLookAhead) continue;
+
     const occId = occurrenceId(dose, dateStr);
     if (await doseGiven(occId)) continue;
     dueDoses.push(dose);
@@ -833,7 +839,7 @@ async function getDueDoses(now: dayjs.Dayjs) {
 
 async function sendDueButtonsToChat(chatId: string, now: dayjs.Dayjs) {
   const dateStr = now.format("YYYY-MM-DD");
-  const dueDoses = await getDueDoses(now);
+  const dueDoses = await getDueDoses(now, 120);
 
   if (dueDoses.length === 0) {
     return enqueueChatOp(chatId, () =>
